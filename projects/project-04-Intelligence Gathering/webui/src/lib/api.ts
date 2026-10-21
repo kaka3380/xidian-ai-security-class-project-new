@@ -136,6 +136,26 @@ export const configApi = {
     }>('/config/options'),
 }
 
+export type VaultKind = 'academic' | 'social'
+export interface DeepTutorKnowledgeBase {
+  name: string
+  connected: boolean
+  status: string
+  documents: number
+  progress?: { stage?: string; message?: string } | null
+  url: string
+}
+export interface DeepTutorStatus {
+  available: boolean
+  reason?: string
+  knowledge_bases: Partial<Record<VaultKind, DeepTutorKnowledgeBase>>
+  vaults: ObsidianVault[]
+}
+export const deeptutorApi = {
+  status: () => api.get<DeepTutorStatus>('/deeptutor/status'),
+  sync: (kind: VaultKind) => api.post<{ state: string; new_files: number; modified_files: number }>(`/deeptutor/sync/${kind}`),
+}
+
 // AI Scientist bridge types
 export interface ScientistCheck {
   name: string
