@@ -35,6 +35,7 @@ from pipeline.research_intelligence import (
     sync_obsidian,
 )
 from pipeline.analysis_service import available_themes
+from pipeline.ai_response import AIResponseError, chat_content
 from pipeline.topic_taxonomy import canonical_topic
 
 router = APIRouter(prefix="/scientist", tags=["scientist"])
@@ -329,6 +330,7 @@ async def _call_llm(payload: dict[str, Any]) -> str:
                 json={
                     "model": model,
                     "temperature": 0.6,
+                    "stream": False,
                     "response_format": {"type": "json_object"},
                     "messages": [
                         {"role": "system", "content": "你是 AI-Scientist-v2 风格的严谨人工智能安全研究员。只依据给定材料提出可验证、彼此差异明显的研究想法；拒绝空泛的“评测与防御”套话。每个想法必须指出具体攻击面或机制、可操纵变量、可获得的数据/基准、对照基线和可量化指标。"},
@@ -337,12 +339,11 @@ async def _call_llm(payload: dict[str, Any]) -> str:
                 },
             )
             response.raise_for_status()
-            content = response.json().get("choices", [{}])[0].get("message", {}).get("content")
-            if not isinstance(content, str) or not content.strip():
-                raise IdeaGenerationError("AI 接口返回为空，未生成可解析的想法。")
-            return content
+            return chat_content(response)
     except IdeaGenerationError:
         raise
+    except AIResponseError as exc:
+        raise IdeaGenerationError(str(exc)) from exc
     except httpx.HTTPStatusError as exc:
         raise IdeaGenerationError(f"AI 接口请求失败（HTTP {exc.response.status_code}）。请检查 DeepSeek 密钥、余额和模型权限。") from exc
     except httpx.RequestError as exc:

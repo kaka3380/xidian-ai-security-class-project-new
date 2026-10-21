@@ -13,6 +13,7 @@ from typing import Any
 import httpx
 import jieba.analyse
 from dotenv import load_dotenv
+from pipeline.ai_response import AIResponseError, chat_content
 from pipeline.research_intelligence import ingest_analysis
 from pipeline.topic_taxonomy import TOPIC_TAXONOMY, canonical_topic, topic_catalog
 
@@ -104,7 +105,7 @@ def _normalize(row: dict[str, Any]) -> dict[str, Any]:
         "author": author[:200],
         "source_url": url[:1000],
         "source_platform": _first(row, "__source_platform"),
-        "published_at": _first(row, "create_time", "publish_time", "time", "date"),
+        "published_at": _first(row, "published_at", "create_time", "publish_time", "time", "date"),
         "raw": row,
     }
 
@@ -274,12 +275,21 @@ async def _summarize_batch(items: list[dict[str, Any]], batch_number: int) -> di
             response = await client.post(
                 f"{os.getenv('AI_BASE_URL', 'https://api.openai.com/v1').rstrip('/')}/chat/completions",
                 headers={"Authorization": f"Bearer {api_key}"},
-                json={"model": os.getenv("AI_MODEL", "gpt-4o-mini"), "temperature": 0.1, "response_format": {"type": "json_object"}, "messages": [{"role": "system", "content": "你是严谨的资料分析助手。"}, {"role": "user", "content": json.dumps(prompt, ensure_ascii=False)}]},
+                json={"model": os.getenv("AI_MODEL", "gpt-4o-mini"), "temperature": 0.1, "stream": False, "response_format": {"type": "json_object"}, "messages": [{"role": "system", "content": "你是严谨的资料分析助手。"}, {"role": "user", "content": json.dumps(prompt, ensure_ascii=False)}]},
             )
             response.raise_for_status()
-            return json.loads(response.json()["choices"][0]["message"]["content"])
-    except Exception:
-        return {}
+            content = chat_content(response)
+            try:
+                summary = json.loads(content)
+            except ValueError as exc:
+                raise AIResponseError("AI 接口响应正常，但模型生成的批摘要不是合法 JSON。") from exc
+            if not isinstance(summary, dict) or not isinstance(summary.get("summary"), str) or not summary["summary"].strip():
+                raise AIResponseError("模型生成的批摘要缺少非空 summary 文本。")
+            return summary
+    except httpx.HTTPStatusError as exc:
+        raise AIResponseError(f"AI 批摘要请求失败（HTTP {exc.response.status_code}），请检查密钥、余额和模型权限。") from exc
+    except httpx.RequestError as exc:
+        raise AIResponseError(f"AI 批摘要连接失败：{exc.__class__.__name__}。请检查网络和 API 地址。") from exc
 
 
 async def _summarize_batches(items: list[dict[str, Any]]) -> list[dict[str, Any]]:

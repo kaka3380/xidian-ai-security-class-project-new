@@ -27,6 +27,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from pipeline.analysis_service import analyze_file, available_themes, prepare_merged_input
+from pipeline.ai_response import AIResponseError
 
 router = APIRouter(prefix="/data", tags=["data"])
 
@@ -90,6 +91,8 @@ async def analyze_data_file(request: AnalysisRequest):
     """Clean, deduplicate and enrich one crawler output file."""
     try:
         return await analyze_file(request.path, request.limit, request.selected_themes, request.custom_themes)
+    except AIResponseError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except FileNotFoundError as exc:
