@@ -336,6 +336,38 @@ async def test_online_probe_preserves_resolved_provider_protocol(monkeypatch, tm
 
 
 @pytest.mark.asyncio
+async def test_online_probe_converts_resolved_runtime_config(monkeypatch, tmp_path) -> None:
+    from deeptutor.services.config.provider_runtime import ResolvedLLMConfig
+
+    config = ResolvedLLMConfig(
+        model="custom-reasoner",
+        provider_name="custom",
+        provider_mode="direct",
+        api_key=["test-key-one", "test-key-two"],
+        base_url="https://models.example.com/v1",
+        wire_api="responses",
+        extra_headers={"X-Tenant": "tenant-a"},
+    )
+
+    async def fake_complete(snapshot, **kwargs):
+        assert snapshot.get_api_key() == "test-key-one"
+        assert snapshot.wire_api == "responses"
+        assert snapshot.extra_headers == {"X-Tenant": "tenant-a"}
+        return "OK"
+
+    monkeypatch.setattr("deeptutor.services.llm.factory.complete_with_config", fake_complete)
+    report = await run_diagnostics(
+        online=True,
+        resolve_llm=lambda: config,
+        data_root=tmp_path,
+        load_rag_config=lambda: {"defaults": {}, "knowledge_bases": {}},
+    )
+
+    assert report.ok is True
+    assert next(check for check in report.checks if check.key == "online").status == "pass"
+
+
+@pytest.mark.asyncio
 async def test_online_probe_is_skipped_when_local_llm_checks_fail(tmp_path) -> None:
     online_calls = []
 

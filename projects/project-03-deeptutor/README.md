@@ -4,6 +4,24 @@ DeepTutor 提供网页与命令行学习助手，支持对话、知识库、学�
 
 [课程任务](COURSE.md) · [课程总说明](../../README.md) · [上游原始 README](README.original.md) · [许可证](LICENSE)
 
+项目04的资料已通过本机联通页接入 `ig04-academic`（学术）、`ig04-social`（社交与分析）两个知识库。进入03对话后在“资源”中选择即可使用；资料更新后在 [04联通页](http://127.0.0.1:8080/deeptutor)手动同步。见[功能核查与联通说明](../../项目03-04-功能核查与联通说明.md)。
+
+## 本机快捷使用（Windows PowerShell 7）
+
+本机已建立 Python 3.12 独立环境并安装前后端依赖。可从课程仓库根目录运行：
+
+```powershell
+.\projects\project-03-deeptutor\start-local.ps1
+# 停止后台服务
+.\projects\project-03-deeptutor\stop-local.ps1
+```
+
+网页默认地址为 **http://127.0.0.1:3782**；实际端口以启动日志为准。脚本默认后台启动，关闭终端后可继续使用。需要源码热更新时使用 `start-local.ps1 -Dev`，需要前台查看日志时加 `-Foreground`。
+
+脚本始终将当前项目设为运行主目录，配置保存在 `data/user/settings/`；后台日志位于 `data/user/runtime/launcher.log`。本机对话模型已配置为 `deepseek-flash`，本地中文嵌入模型为 `BAAI/bge-small-zh-v1.5`（CPU、512 维）。启停脚本会同时管理本地嵌入服务。模型缓存、密钥和知识库均保存在已忽略的 `data/` 下。
+
+2026-10-21 本机验证：Python 3.12.14、Node.js 24.18.0、npm 11.16.0；网页生产构建、运行诊断、在线模型探测、真实中文对话及附件问答通过。已创建三文档验收知识库 `03-local-acceptance`，完成本地向量入库、检索和引用问答，正确回答海岚计划的验收码、测试集数量和负责人。复现与使用方法见[本机模型及知识库说明](docs-for-user/local-windows.md)。
+
 ## 1. 环境准备
 
 源码开发版建议 Python 3.11–3.14、Node.js 22 LTS 和 npm。初学者可使用 Python 3.11；不同可选功能有各自的版本和系统依赖。先确认 `python --version`、`node --version`、`npm --version`。
@@ -89,4 +107,4 @@ deeptutor kb list
 | 配置突然为空 | 检查本次启动目录与 `DEEPTUTOR_HOME` 是否变化 |
 | 文档入库失败 | 检查解析和嵌入模型配置，先用小型纯文本资料排查 |
 
-更多安装方案和可选扩展见原始 README。作业提交要求见 COURSE.md；本课程源码整理时的上游版本为 `f07029cfcf2c8dfccdb671cdfc343db8334f5741`。本次文档依据当前源码编写，未安装或启动服务验证。
+更多安装方案和可选扩展见原始 README。作业提交要求见 COURSE.md；本课程源码整理时的上游版本为 `f07029cfcf2c8dfccdb671cdfc343db8334f5741`。
