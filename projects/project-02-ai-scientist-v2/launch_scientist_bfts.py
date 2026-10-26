@@ -39,6 +39,17 @@ def save_token_tracker(idea_dir):
         json.dump(token_tracker.get_interactions(), f)
 
 
+def preserve_experiment_results(idea_dir):
+    source = osp.join(idea_dir, "logs/0-run/experiment_results")
+    if not osp.isdir(source):
+        raise RuntimeError(
+            "Experiment search produced no result directory. Inspect the stage "
+            "journals for failed implementations; plotting, writeup and review "
+            "have not been started."
+        )
+    shutil.copytree(source, osp.join(idea_dir, "experiment_results"), dirs_exist_ok=True)
+
+
 def parse_arguments():
     parser = argparse.ArgumentParser(description="Run AI scientist experiments")
     parser.add_argument(
@@ -254,17 +265,12 @@ if __name__ == "__main__":
     )
 
     perform_experiments_bfts(idea_config_path)
-    experiment_results_dir = osp.join(idea_dir, "logs/0-run/experiment_results")
-    if os.path.exists(experiment_results_dir):
-        shutil.copytree(
-            experiment_results_dir,
-            osp.join(idea_dir, "experiment_results"),
-            dirs_exist_ok=True,
-        )
+    save_token_tracker(idea_dir)
+    preserve_experiment_results(idea_dir)
 
     aggregate_plots(base_folder=idea_dir, model=args.model_agg_plots)
 
-    shutil.rmtree(osp.join(idea_dir, "experiment_results"))
+    # Retain raw experiment artifacts for independent validation after plotting.
 
     save_token_tracker(idea_dir)
 
@@ -344,26 +350,9 @@ if __name__ == "__main__":
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
 
-    # Additional cleanup: find any orphaned processes containing specific keywords
-    keywords = ["python", "torch", "mp", "bfts", "experiment"]
-    for proc in psutil.process_iter(["name", "cmdline"]):
-        try:
-            # Check both process name and command line arguments
-            cmdline = " ".join(proc.cmdline()).lower()
-            if any(keyword in cmdline for keyword in keywords):
-                proc.send_signal(signal.SIGTERM)
-                proc.wait(timeout=3)
-                if proc.is_running():
-                    proc.kill()
-        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.TimeoutExpired):
-            continue
-
-    # Finally, terminate the current process
-    # current_process.send_signal(signal.SIGTERM)
-    # try:
-    #     current_process.wait(timeout=3)
-    # except psutil.TimeoutExpired:
-    #     current_process.kill()
+    # Only this launcher's descendants belong to this experiment. A global
+    # keyword scan can kill the launcher itself and unrelated host processes.
+    psutil.wait_procs(alive, timeout=3)
 
     # exit the program
     sys.exit(0)

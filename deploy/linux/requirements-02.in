@@ -1,0 +1,12 @@
+# Project requirements remain owned by the upstream project.
+-r ../../projects/project-02-ai-scientist-v2/requirements.txt
+# Official Python 3.11 / CUDA 12.4 wheel combination.
+torch==2.6.0+cu124
+torchvision==0.21.0+cu124
+torchaudio==2.6.0+cu124
+# Keep the upstream 2025 API families; the upstream file has no upper bounds.
+anthropic>=0.49,<1
+openai>=1.66,<2
+transformers>=4.49,<5
+datasets>=3.3,<4
+pymupdf4llm>=0.0.17,<0.1

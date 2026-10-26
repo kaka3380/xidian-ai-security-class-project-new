@@ -33,4 +33,7 @@ checkpoints/
 .course-publish/
 browser_data/
 .uv-cache*/
+# Local research outputs and machine-specific acceptance records
+/outputs/
+/deploy/linux/evidence/
 

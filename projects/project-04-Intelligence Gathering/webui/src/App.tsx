@@ -9,6 +9,7 @@ import { AnalysisWorkspace } from '@/components/analysis/AnalysisWorkspace'
 import { ScientistWorkspace } from '@/components/scientist/ScientistWorkspace'
 import { KnowledgeBaseWorkspace } from '@/components/knowledge/KnowledgeBaseWorkspace'
 import { DeepTutorWorkspace } from '@/components/learning/DeepTutorWorkspace'
+import { ResearchWorkbench } from '@/components/research/ResearchWorkbench'
 import { EnvironmentCheck, isEnvChecked } from '@/components/env/EnvironmentCheck'
 import { LicenseDisclaimer, isLicenseAccepted } from '@/components/license/LicenseDisclaimer'
 
@@ -23,6 +24,8 @@ function App() {
   const [envChecked, setEnvChecked] = useState(() => isEnvChecked())
   const [view, setView] = useState<View>(() => new URLSearchParams(window.location.search).get('view') === 'learning' ? 'learning' : 'new')
   const [showDisclaimer, setShowDisclaimer] = useState(false)
+
+  if (window.location.pathname === '/workbench') return <div className="min-h-screen bg-[#171717] text-zinc-100"><ResearchWorkbench /></div>
 
   return <div className="h-screen overflow-hidden bg-[#151515] text-zinc-100 flex">
     {(!licenseAccepted || showDisclaimer) && <LicenseDisclaimer onAccept={() => { setLicenseAccepted(true); setShowDisclaimer(false) }} />}
@@ -39,6 +42,7 @@ function App() {
         <NavItem icon={BookOpen} label="知识库" active={view === 'knowledge'} onClick={() => setView('knowledge')} />
         <NavItem icon={GraduationCap} label="学习问答" active={view === 'learning'} onClick={() => setView('learning')} />
         <NavItem icon={FlaskConical} label="科研自动化" active={view === 'scientist'} onClick={() => setView('scientist')} />
+        <NavItem icon={LayoutDashboard} label="研究工作台" onClick={() => window.location.assign('http://127.0.0.1:8090/workbench')} />
       </nav>
       <div className="flex-1" />
       <button type="button" onClick={() => setShowDisclaimer(true)} className="text-left px-3 py-2 text-xs text-zinc-500 hover:text-zinc-300">使用说明与许可</button>

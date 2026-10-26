@@ -7,6 +7,7 @@ import socket
 import json
 from pathlib import Path
 import shutil
+import re
 wd = Path(__file__).parent.resolve()
 from dataclasses import dataclass, field
 from typing import Optional, Union, Dict
@@ -37,8 +38,52 @@ class DockerEnv:
         self.git_clone = config.git_clone
         self.setup_package = config.setup_package
         self.communication_port = config.communication_port
+        self.research_task_id = os.environ.get("RESEARCH_TASK_ID")
+        self.research_project_id = os.environ.get("RESEARCH_PROJECT_ID")
+        if self.research_task_id:
+            for value in (self.research_task_id, self.research_project_id):
+                if not value or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,79}", value):
+                    raise ValueError("Invalid research task ownership")
+            if not (BASE_IMAGES.startswith("sha256:") or "@sha256:" in BASE_IMAGES):
+                raise ValueError("Managed research containers require a pinned image")
+            if self.git_clone or self.setup_package:
+                raise ValueError("Managed tasks require pre-staged inputs")
+
+    def _verify_task_owner(self):
+        result = subprocess.run(["docker", "inspect", self.container_name], capture_output=True, text=True, check=True)
+        info = json.loads(result.stdout)[0]
+        labels = info["Config"].get("Labels") or {}
+        if labels.get("research.task_id") != self.research_task_id or labels.get("research.project_id") != self.research_project_id:
+            raise ValueError("Container belongs to a different task")
+        return info
+
+    def _init_managed_container(self):
+        os.makedirs(self.local_workplace, exist_ok=True)
+        existing = subprocess.run(["docker", "container", "ls", "-a", "--filter", f"name=^{self.container_name}$", "--format", "{{.Names}}"], capture_output=True, text=True, check=True)
+        if self.container_name in existing.stdout.splitlines():
+            info = self._verify_task_owner()
+            if not info["State"]["Running"]:
+                raise RuntimeError("Existing task container stopped; automatic replay disabled")
+            self.wait_for_container_ready(timeout=60)
+            return
+        gpu_cmd = ["--gpus", GPUS] if GPUS else []
+        command = ["docker", "run", "-d", "--platform", PLATFORM, "--name", self.container_name,
+                   "--label", f"research.task_id={self.research_task_id}", "--label", f"research.project_id={self.research_project_id}",
+                   "--user", "1000:1000", "--cpus", "4", "--memory", "4g", "--memory-swap", "4g", "--pids-limit", "256",
+                   "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--restart", "no",
+                   "-v", f"{os.path.abspath(self.local_workplace)}:{self.docker_workplace}", "-w", self.docker_workplace,
+                   "-p", f"127.0.0.1:{self.communication_port}:8000", "--env", "HOME=/tmp", "--entrypoint", "python"]
+        command += gpu_cmd + [BASE_IMAGES, "/app/tcp_server.py", "--workplace", self.docker_workplace, "--port", "8000"]
+        subprocess.run(command, capture_output=True, text=True, check=True)
+        try:
+            self.wait_for_container_ready(timeout=60)
+        except Exception:
+            self.stop_container()
+            raise
         
     def init_container(self):
+        if self.research_task_id:
+            return self._init_managed_container()
         container_check_command = ["docker", "ps", "-a", "--filter", f"name={self.container_name}", "--format", "{{.Names}}"]
         existing_container = subprocess.run(container_check_command, capture_output=True, text=True)
         os.makedirs(self.local_workplace, exist_ok=True)
@@ -116,7 +161,7 @@ class DockerEnv:
                 # 额外检查 tcp_server 是否运行
                 try:
                     port_info = check_container_ports(self.container_name)
-                    assert port_info and (port_info[0] == port_info[1])
+                    assert port_info and port_info[1] == 8000
                     available_port = port_info[0]
                     self.communication_port = available_port
                     result = self.run_command('ps aux')
@@ -130,10 +175,14 @@ class DockerEnv:
             
         raise TimeoutError(f"Container {self.container_name} failed to start within {timeout} seconds")
     def stop_container(self):
+        if self.research_task_id:
+            self._verify_task_owner()
         stop_command = ["docker", "stop", self.container_name]
         result = subprocess.run(stop_command, capture_output=True, text=True)
         if result.returncode != 0:
             raise Exception(f"Failed to stop container: {result.stderr}")
+        if self.research_task_id and self._verify_task_owner()["State"]["Running"]:
+            raise RuntimeError("Task container did not stop")
     
     def run_command(self, command, stream_callback=None):
         """
@@ -147,11 +196,13 @@ class DockerEnv:
         Returns:
             dict: the complete JSON result returned by the docker container
         """
-        hostname = 'localhost'
+        hostname = os.environ.get('RESEARCH_CONTAINER_HOST', 'localhost') if self.research_task_id else 'localhost'
         port = self.communication_port
         buffer_size = 4096
         
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            if self.research_task_id:
+                s.settimeout(300)
             s.connect((hostname, port))
             s.sendall(command.encode())
             

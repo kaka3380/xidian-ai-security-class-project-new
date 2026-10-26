@@ -1,0 +1,19 @@
+# GPU acceptance image; the future experiment adapter is a separate stage.
+FROM python:3.11.16-slim-bookworm@sha256:a36c24f9cbdf4fd0f52d67f0823eeac19c2028c637cecc392d97f980d4fec56b
+COPY uv /usr/local/bin/uv
+COPY requirements-02-linux-py311.lock /opt/requirements.lock
+RUN --mount=type=bind,from=wheels,target=/wheelhouse \
+    uv pip sync --system --no-cache --require-hashes --no-index \
+    --find-links /wheelhouse /opt/requirements.lock \
+    && uv pip check --system
+COPY source /opt/scientist02
+COPY gpu_probe.py /opt/gpu_probe.py
+ENV PYTHONPATH=/opt/scientist02 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    HF_HUB_OFFLINE=1 \
+    WANDB_MODE=disabled \
+    AWS_EC2_METADATA_DISABLED=true \
+    HOME=/tmp
+USER 1000:1000
+WORKDIR /tmp
+CMD ["python", "/opt/gpu_probe.py"]
