@@ -36,6 +36,9 @@ def plan_hash(plan):
         raise ValueError("invalid dataset version")
     if not isinstance(content["image"], str) or not (content["image"].startswith("sha256:") or "@sha256:" in content["image"]):
         raise ValueError("image must be pinned by digest")
+    if "experiment" in content["config"]:
+        from workbench.backend.services.injection_experiment import contract
+        contract(content)
     return digest(canonical(content))
 
 

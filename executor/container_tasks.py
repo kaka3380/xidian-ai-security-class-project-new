@@ -47,11 +47,21 @@ def stop_owned(package):
 def validate_source(folder, task, project):
     package = state_io.read(confined(folder, "research_package.json"))
     plan = state_io.read(confined(folder, "approved-plan.json"))
-    document = state_io.read(confined(folder, "approved-document.json"))
+    documents_path = folder / "approved-documents.json"
+    documents = state_io.read(documents_path) if documents_path.exists() else [state_io.read(confined(folder, "approved-document.json"))]
     if package["task_id"] != task or package["project_id"] != project or package["engine"] != "scientist02" or package["image"] not in {IMAGE, REPAIRED_IMAGE}:
         raise ValueError("unsupported task identity, engine or image")
     files = {doc["path"]: confined(folder, doc["path"]).read_bytes() for doc in package["documents"]}
-    validate_frozen_package(package, files, documents=[document], plan=plan)
+    validate_frozen_package(package, files, documents=documents, plan=plan)
+    if "experiment" in package["config"]:
+        from workbench.backend.services.injection_experiment import validate_inputs, source_hash, source_inventory
+        validate_inputs(package, state_io.read(confined(folder, "experiment-input.json")))
+        if package["source_snapshot_hash"] != source_hash():
+            raise ValueError("experiment source snapshot mismatch")
+        inventory = state_io.read(confined(folder, "source-snapshot.json"))
+        if inventory != source_inventory() or any(file_hash(confined(folder, "runtime/" + name)) != checksum for name, checksum in inventory.items()):
+            raise ValueError("frozen execution source bytes mismatch")
+        return package
     if file_hash(confined(folder, "dataset.npz")) != package["dataset_hash"]:
         raise ValueError("dataset hash mismatch")
     if package["config"]["timeout_seconds"] != 1800:
@@ -67,6 +77,8 @@ def finish(folder, state, outcome, reason=None, exit_code=None):
     if info:
         logs = docker("logs", "--tail", "20000", "research-" + package["task_id"])
         (folder / "engine.log").write_text((logs.stdout + logs.stderr)[-4_000_000:], encoding="utf-8")
+    if "experiment" in package["config"]:
+        return finish_injection(folder, state, package, outcome, reason, exit_code)
     candidates = []
     for path in (folder / "experiments").rglob("metrics.json") if (folder / "experiments").exists() else []:
         if not path.is_symlink() and path.stat().st_size < 100000:
@@ -103,6 +115,31 @@ def finish(folder, state, outcome, reason=None, exit_code=None):
     return state
 
 
+def finish_injection(folder, state, package, outcome, reason, exit_code):
+    from workbench.backend.services.injection_experiment import verify_output
+    artifacts = []
+    for path in sorted(folder.rglob("*")):
+        name = path.relative_to(folder).as_posix()
+        if path.is_file() and not path.is_symlink() and (name.startswith(("experiments/", "runtime/")) or name in {"engine.log", "adapter.json", "bfts_config.yaml", "experiment-input.json", "source-snapshot.json"}):
+            artifacts.append(dict(path=name, sha256=file_hash(confined(folder, name))))
+    result = dict(schema_version=2, task_id=package["task_id"], project_id=package["project_id"], attempt=package["attempt"],
+        package_hash=package["package_hash"], engine=package["engine"], execution_status=outcome, validation_status="failed", exit_code=exit_code,
+        failure_reason=reason, started_at=state.get("started_at"), finished_at=state_io.now(), effective_config=package["config"],
+        source_snapshot_hash=package["source_snapshot_hash"], image=package["image"], metrics={}, artifacts=artifacts,
+        usage={"source": "task-scoped experiment budget ledger"}, record_status="pending_review", evidence_kind=package["config"]["experiment"]["mode"])
+    if outcome == "completed" and exit_code == 0:
+        try:
+            result["metrics"] = state_io.read(folder / "experiments/metrics.json")["metrics"]
+            verify_output(package, state_io.read(folder / "experiment-input.json"), result, folder)
+            result["validation_status"] = "passed"
+        except (ValueError, KeyError, TypeError, OSError) as error:
+            result["failure_reason"] = "independent verification failed: " + str(error)
+    state_io.atomic(folder / "result.json", result)
+    state.update(execution_status=outcome, finished_at=result["finished_at"], failure_reason=result["failure_reason"])
+    state_io.atomic(folder / "state.json", state)
+    return state
+
+
 def reconcile(folder):
     state = state_io.read(folder / "state.json")
     if state["execution_status"] not in state_io.TERMINAL and not state_io.alive(state):
@@ -132,18 +169,27 @@ def submit(task, project):
             raise ValueError("approved scientist02 image unavailable")
         stage = Path(tempfile.mkdtemp(prefix=".accept-", dir=state_io.RUNS))
         try:
-            names = ["research_package.json", "approved-plan.json", "approved-document.json", "dataset.npz", *[d["path"] for d in package["documents"]]]
+            injection = "experiment" in package["config"]
+            document_file = "approved-documents.json" if (source / "approved-documents.json").exists() else "approved-document.json"
+            names = ["research_package.json", "approved-plan.json", document_file, "experiment-input.json" if injection else "dataset.npz", *[d["path"] for d in package["documents"]]]
+            if injection:
+                names.extend(["source-snapshot.json", *["runtime/" + name for name in state_io.read(source / "source-snapshot.json")]])
+                if package["config"]["experiment"]["mode"] == "regenerate":
+                    names.append("gateway-access.json")
             for name in names:
                 target = stage / name
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(confined(source, name), target)
             validate_source(stage, task, project)
             import yaml
-            source02 = Path((state_io.ROOT / "engines/02/source-path.txt").read_text().strip())
-            config = yaml.safe_load((source02 / "bfts_config.yaml").read_text())
+            config = {}
+            if not injection:
+                source02 = Path((state_io.ROOT / "engines/02/source-path.txt").read_text().strip())
+                config = yaml.safe_load((source02 / "bfts_config.yaml").read_text())
             metadata = prepare_inputs(package, config, stage)
-            shutil.copyfile(state_io.ROOT / "support/frozen_experiment.py", stage / "ideas.py")
-            metadata["command"].append("--load_code")
+            if not injection:
+                shutil.copyfile(state_io.ROOT / "support/frozen_experiment.py", stage / "ideas.py")
+                metadata["command"].append("--load_code")
             state_io.atomic(stage / "adapter.json", metadata)
             state = {"task_id": task, "project_id": project, "package_hash": package["package_hash"], "execution_status": "accepted", "process": None, "accepted_at": state_io.now(), "container_name": "research-" + task}
             state_io.atomic(stage / "state.json", state)
@@ -167,14 +213,34 @@ def supervise(task, project, lock_fd):
         heavy = (state_io.ROOT / "heavy-experiment.lock").open("a+")
         fcntl.flock(heavy, fcntl.LOCK_EX | fcntl.LOCK_NB)
         metadata = state_io.read(folder / "adapter.json")
-        gateway = state_io.read(Path("/mnt/e/work/ai-security-class-project/workbench/data/model-session/gateway.json"))
-        env = dict(os.environ, OPENAI_API_KEY=gateway["token"], OPENAI_BASE_URL=f"http://host.docker.internal:{gateway['port']}/v1")
+        injection = "experiment" in package["config"]
+        if injection:
+            env = dict(os.environ)
+            if package["config"]["experiment"]["mode"] == "regenerate":
+                gateway = state_io.read(folder / "gateway-access.json")
+                if type(gateway.get("port")) is not int or not 1 <= gateway["port"] <= 65535:
+                    raise ValueError("invalid scoped gateway port")
+                env.update(EXPERIMENT_TOKEN=gateway["token"], EXPERIMENT_GRANT=gateway["grant_id"],
+                           EXPERIMENT_GATEWAY_URL=f"http://host.docker.internal:{gateway['port']}/v1/experiment/chat/completions")
+        else:
+            gateway = state_io.read(Path("/mnt/e/work/ai-security-class-project/workbench/data/model-session/gateway.json"))
+            env = dict(os.environ, OPENAI_API_KEY=gateway["token"], OPENAI_BASE_URL=f"http://host.docker.internal:{gateway['port']}/v1")
         (folder / "experiments").mkdir(exist_ok=True)
         args = ["create", "--name", "research-" + task, "--gpus", "all", "--user", "1000:1000", "--cpus", "4", "--memory", "4g", "--memory-swap", "4g", "--pids-limit", "256", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--read-only", "--tmpfs", "/tmp:rw,nosuid,nodev,size=512m", "--restart", "no", "--workdir", "/task", "--env", "OPENAI_API_KEY", "--env", "OPENAI_BASE_URL", "--env", "MPLCONFIGDIR=/tmp/matplotlib", "--env", "NUMBA_CACHE_DIR=/tmp/numba", "--env", "OMP_NUM_THREADS=1", "--env", "HF_HUB_OFFLINE=1", "--mount", f"type=bind,src={folder},dst=/task,readonly", "--mount", f"type=bind,src={folder / 'experiments'},dst=/task/experiments"]
+        if injection:
+            # Never inherit a host provider credential into a benchmark container.
+            for variable in ("OPENAI_API_KEY", "OPENAI_BASE_URL"):
+                env.pop(variable, None)
+            if package["config"]["experiment"]["mode"] == "frozen_analysis":
+                args.extend(["--network", "none"])
+            else:
+                for variable in ("EXPERIMENT_TOKEN", "EXPERIMENT_GRANT", "EXPERIMENT_GATEWAY_URL"):
+                    args.extend(["--env", variable])
+            args.extend(["--env", "PYTHONPATH=/task/runtime", "--env", "PYTHONDONTWRITEBYTECODE=1"])
         for key, value in metadata["labels"].items():
             args.extend(["--label", key + "=" + value])
         # Approved inputs and runtime configuration are read-only inside the task.
-        for name in ("research_package.json", "approved-document.json", "approved-plan.json", "ideas.json", "ideas.py", "bfts_config.yaml", "adapter.json"):
+        for name in (() if injection else ("research_package.json", "approved-document.json", "approved-plan.json", "ideas.json", "ideas.py", "bfts_config.yaml", "adapter.json")):
             args.extend(["--mount", f"type=bind,src={folder / name},dst=/task/{name},readonly"])
         args.extend([package["image"], *metadata["command"]])
         created = docker(*args, env=env)
@@ -197,9 +263,10 @@ def supervise(task, project, lock_fd):
                 if (folder / "cancel.json").exists():
                     stop_owned(package)
                     return finish(folder, state, "cancelled", "cancel requested")
-                if time.monotonic() - started >= 1800:
+                deadline = package["config"]["experiment"]["timeout_seconds"] if injection else package["config"]["timeout_seconds"]
+                if time.monotonic() - started >= deadline:
                     stop_owned(package)
-                    return finish(folder, state, "timed_out", "30-minute supervisor deadline")
+                    return finish(folder, state, "timed_out", "approved supervisor deadline reached")
             time.sleep(0.5)
     except Exception as error:
         with state_io.locked(task):
@@ -212,6 +279,11 @@ def supervise(task, project, lock_fd):
 
 def status(task, project):
     with state_io.locked(task):
+        if not (state_io.RUNS / task).exists():
+            package = validate_source(confined(state_io.EXCHANGE, task), task, project)
+            if inspect_owned(package) is not None:
+                raise ValueError("orphan container found; stop state unknown")
+            return dict(task_id=task, project_id=project, package_hash=package["package_hash"], execution_status="not_found", process_alive=False)
         folder = state_io.owned(task, project)
         state = reconcile(folder)
         active = state_io.alive(state)

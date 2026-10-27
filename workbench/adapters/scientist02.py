@@ -10,10 +10,26 @@ def prepare_inputs(package, base_config, output):
     if package.get("engine") != "scientist02" or package.get("schema_version") != 2:
         raise ValueError("expected an approved scientist02 package")
     task = identifier(package["task_id"])
+    if "experiment" in package["config"]:
+        from workbench.backend.services.injection_experiment import contract
+        value = contract(package)
+        output = Path(output)
+        output.mkdir(parents=True, exist_ok=True)
+        metadata = {"command": ["python", "-m", "workbench.bridges.scientist02.injection_runner", "/task"],
+                    "effective_config_hash": digest(canonical(package["config"])), "profile": value["profile"],
+                    "container_name": "research-" + task,
+                    "labels": {"research.task_id": task, "research.project_id": package["project_id"], "research.package_hash": package["package_hash"]}}
+        for name, data in (("bfts_config.yaml", package["config"]), ("adapter.json", metadata)):
+            with (output / name).open("xb") as stream:
+                stream.write(canonical(data))
+        return metadata
     models = package["config"].get("models", {})
     if any(not models.get(role) for role in ("code", "feedback", "vision", "plot")):
         raise ValueError("code, feedback, vision and plotting models must be explicit")
     budget = package["config"].get("budget_cny")
+    # Legacy synthetic fixture compatibility only; the new benchmark has no hidden search stages.
+    if package["seeds"] != [42]:
+        raise ValueError("legacy synthetic profile supports seed 42 only")
     if type(budget) not in (int, float) or not 0 < budget <= 5:
         raise ValueError("invalid approved session budget")
     config = deepcopy(base_config)

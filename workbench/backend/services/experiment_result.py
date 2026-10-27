@@ -12,10 +12,11 @@ def verify_record(folder):
     folder = local_path(folder)
     package = json.loads((folder / "research_package.json").read_text(encoding="utf-8"))
     result = json.loads((folder / "result.json").read_text(encoding="utf-8"))
-    document = json.loads((folder / "approved-document.json").read_text(encoding="utf-8"))
+    documents_path = folder / "approved-documents.json"
+    documents = json.loads(documents_path.read_bytes()) if documents_path.exists() else [json.loads((folder / "approved-document.json").read_bytes())]
     plan = json.loads((folder / "approved-plan.json").read_text(encoding="utf-8"))
     files = {d["path"]: confined(folder, d["path"]).read_bytes() for d in package["documents"]}
-    validate_frozen_package(package, files, documents=[document], plan=plan)
+    validate_frozen_package(package, files, documents=documents, plan=plan)
     for key in ("task_id", "project_id", "engine", "package_hash"):
         if result[key] != package[key]:
             raise ValueError("result/package identity mismatch")
@@ -33,7 +34,10 @@ def verify_record(folder):
     if result["validation_status"] == "passed":
         if result["execution_status"] != "completed" or result["exit_code"] != 0 or any(m not in result["metrics"] for m in package["metrics"]):
             raise ValueError("invalid passed result")
-    return package, result, document
+        if "experiment" in package["config"]:
+            from workbench.backend.services.injection_experiment import verify_output
+            verify_output(package, json.loads((folder / "experiment-input.json").read_bytes()), result, folder)
+    return package, result, documents if "experiment" in package["config"] else documents[0]
 
 
 def register_record(folder, database):

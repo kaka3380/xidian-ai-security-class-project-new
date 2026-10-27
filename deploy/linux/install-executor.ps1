@@ -12,6 +12,10 @@ foreach ($name in @('protocol.py', 'main.py', 'container_tasks.py')) {
 $files = @(
     'workbench/backend/services/review_workflow.py',
     'workbench/backend/services/research_package.py',
+    'workbench/backend/services/injection_experiment.py',
+    'workbench/backend/services/experiment_budget.py',
+    'workbench/backend/services/model_gateway.py',
+    'workbench/bridges/scientist02/injection_runner.py',
     'workbench/adapters/scientist02.py'
 )
 foreach ($file in $files) {

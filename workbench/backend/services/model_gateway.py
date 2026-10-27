@@ -94,7 +94,7 @@ class Ledger:
         return {"budget_cny": 5, "reserved_upper_bound_cny": sum(r[1] for r in rows) / 1e6, "model": MODEL, "model_requests": len(rows), "requests": [{"id": r[0], "reserved_cny": r[1] / 1e6, "status": r[2], "usage": json.loads(r[3]) if r[3] else None} for r in rows]}
 
 
-def serve(key_file, runtime, host="127.0.0.1", port=18765):
+def serve(key_file, runtime, host="127.0.0.1", port=18765, workbench_data=None):
     runtime.mkdir(parents=True, exist_ok=True)
     loader = importlib.util.spec_from_file_location("key_loader", Path(__file__).resolve().parents[3] / "deploy/linux/probe-deepseek.py")
     module = importlib.util.module_from_spec(loader)
@@ -129,6 +129,8 @@ def serve(key_file, runtime, host="127.0.0.1", port=18765):
             self.reply(404, {"error": "unsupported path"})
 
         def do_POST(self):
+            if self.path == "/v1/experiment/chat/completions" and workbench_data is not None:
+                return self.experiment_request()
             if not self.authorized():
                 return self.reply(401, {"error": "unauthorized"})
             if self.path not in {"/chat/completions", "/v1/chat/completions"}:
@@ -158,9 +160,32 @@ def serve(key_file, runtime, host="127.0.0.1", port=18765):
             finally:
                 (runtime / "usage.json").write_text(json.dumps(ledger.summary(), indent=2), encoding="utf-8")
 
+        def experiment_request(self):
+            from workbench.backend.services.experiment_budget import ExperimentBudgets
+            budgets = ExperimentBudgets(workbench_data)
+            try:
+                size = int(self.headers.get("Content-Length", "0"))
+                if not 0 < size <= 1_048_576:
+                    raise ValueError("invalid request size")
+                body = json.loads(self.rfile.read(size))
+                call_id, request = budgets.reserve(self.headers.get("X-Experiment-Grant"), self.headers.get("X-Experiment-Task"),
+                    self.headers.get("X-Experiment-Sample"), body, self.headers.get("Authorization", "").removeprefix("Bearer "))
+            except (ValueError, TypeError, KeyError):
+                return self.reply(402, {"error": "experiment contract or budget rejected"})
+            try:
+                upstream = urllib.request.Request("https://api.deepseek.com/chat/completions", data=json.dumps(request).encode(), headers={"Authorization": "Bearer " + key, "Content-Type": "application/json"})
+                with urllib.request.urlopen(upstream, timeout=180) as response:
+                    data = json.load(response)
+                budgets.finish(call_id, data)
+                self.reply(200, dict(data, workbench_request_id=call_id))
+            except (urllib.error.URLError, TimeoutError, ValueError):
+                budgets.finish(call_id)
+                self.reply(502, {"error": "provider failure; full reservation retained", "workbench_request_id": call_id})
+
     server = ThreadingHTTPServer((host, port), Handler)
     # This is a limited local proxy credential, never the provider key.
-    (runtime / "gateway.json").write_text(json.dumps({"pid": __import__("os").getpid(), "port": server.server_port, "token": token}), encoding="utf-8")
+    (runtime / "gateway.json").write_text(json.dumps({"pid": __import__("os").getpid(), "port": server.server_port, "token": token,
+        "experiment_data": str(workbench_data.resolve()) if workbench_data is not None else None}), encoding="utf-8")
     print(json.dumps({"status": "ready", "host": host, "port": server.server_port, "budget_cny": 5}), flush=True)
     try:
         server.serve_forever()
@@ -175,5 +200,6 @@ if __name__ == "__main__":
     parser.add_argument("--runtime", type=Path, default=Path("workbench/data/model-session"))
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=18765)
+    parser.add_argument("--workbench-data", type=Path)
     args = parser.parse_args()
-    serve(args.key_file, args.runtime, args.host, args.port)
+    serve(args.key_file, args.runtime, args.host, args.port, args.workbench_data)

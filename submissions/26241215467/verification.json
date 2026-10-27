@@ -1,0 +1,108 @@
+{
+  "identity": {
+    "student_id": "26241215467",
+    "name": "张家康"
+  },
+  "scope": [
+    "01",
+    "02",
+    "03",
+    "04"
+  ],
+  "target_repository": "kaka3380/xidian-ai-security-class-project-new",
+  "base_branch": "main",
+  "head_branch": "students/26241215467/project-04",
+  "backend_regression": {
+    "passed": 247,
+    "subtests_passed": 17,
+    "skipped": 0,
+    "scope": "workbench/tests + 04 bridge, limits, ai_response"
+  },
+  "frontend_build": "passed",
+  "provider_calls_in_current_checks": 0,
+  "project03_tests": {
+    "passed": 36,
+    "skipped": 0,
+    "scope": [
+      "tests/scripts/test_local_embeddings.py",
+      "tests/cli/test_doctor_cli.py"
+    ]
+  },
+  "verification_date": "2026-10-27",
+  "historical_evidence": {
+    "project01_infrastructure": {
+      "model_requests": 0,
+      "purpose": "container_infrastructure_only_not_full_researcher_acceptance",
+      "tcp_final": {
+        "type": "final",
+        "status": 0,
+        "result": "1000\n2.0\n"
+      },
+      "scope_note": "Historical record, not rerun during this PR preparation; raw logs and private credentials are excluded."
+    },
+    "workbench_native_rag": {
+      "approved_documents": 5,
+      "checked_at": "2026-10-24T15:19:03.040348+08:00",
+      "kb_version": 1,
+      "milestone": "M1",
+      "paid_model_requests": 0,
+      "rejected_documents": 1,
+      "status": "local_integration_passed",
+      "validation_retry_reused_completed_index": true,
+      "scope_note": "Historical record, not rerun during this PR preparation; raw logs and private credentials are excluded."
+    },
+    "prompt_injection_live": {
+      "actual_provider_charge": "not independently available",
+      "additional_request_rejected_before_provider": true,
+      "counts": {
+        "attack": 12,
+        "clean": 12,
+        "correct": 12,
+        "success": 0,
+        "valid": 24
+      },
+      "dataset_sha256": "c3975e6147222104579ab65d6fa46d10dd238a68b59564c7149b3b665099ab5c",
+      "date": "2026-10-26",
+      "independent_recalculation": "passed",
+      "metrics": {
+        "attack_success_rate": 0.0,
+        "clean_task_accuracy": 1.0,
+        "valid_response_rate": 1.0
+      },
+      "real_model_requests": 24,
+      "report_model_requests": 0,
+      "review_status": "pending_review",
+      "status": "steps_5_and_6_completed",
+      "scope_note": "Historical record, not rerun during this PR preparation; raw logs and private credentials are excluded."
+    }
+  },
+  "latest_scientist02_example": {
+    "date": "2026-10-27",
+    "full_pipeline_verified": false,
+    "last_recorded_stage": "4_ablation_studies_1_first_attempt",
+    "seed": 42,
+    "test_samples": 103,
+    "accuracy_recomputed_from_saved_predictions": [
+      {
+        "weight_decay": 0,
+        "correct": 91,
+        "total": 103
+      },
+      {
+        "weight_decay": 0.001,
+        "correct": 92,
+        "total": 103
+      },
+      {
+        "weight_decay": 0.01,
+        "correct": 92,
+        "total": 103
+      }
+    ],
+    "known_limits": [
+      "single seed and tiny synthetic sample",
+      "upstream stage requirements conflict with offline dataset restriction",
+      "different minibatch sampling order across weight-decay settings"
+    ]
+  }
+}

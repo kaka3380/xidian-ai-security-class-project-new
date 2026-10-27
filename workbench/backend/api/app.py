@@ -10,7 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from executor.protocol import canonical, digest
+from executor.protocol import canonical, confined, digest, identifier
 from workbench.adapters.deeptutor import DeepTutor, UpstreamError
 from workbench.backend.store import Conflict, Missing, Store, encode, now
 from workbench.backend.services.research_package import plan_hash
@@ -38,10 +38,11 @@ class Snapshot(Payload):
 
 
 class Task(Payload):
-    task_type: Literal["journal_replay", "index_snapshot"]
+    task_type: Literal["journal_replay", "index_snapshot", "injection_experiment"]
     idempotency_key: str
     kb_version: int | None = Field(default=None, ge=1)
     approved_manifest_hash: str | None = None
+    experiment: dict | None = None
 
 
 class Retry(Payload):
@@ -101,7 +102,8 @@ def create_app(data=None, *, adapter=None, operator=None):
     @app.get("/api/workbench/health")
     def health():
         return {"status": "ready", "operator": operator, "paid_tasks_enabled": False,
-                "milestone": "M1", "worker_mode": "single", "embedding_policy": "local_only",
+                "milestone": "M2-foundation", "worker_mode": "single", "embedding_policy": "local_only",
+                "experiment_profiles": ["prompt_injection_v1"], "paid_execution_requires": "explicit approved plan + new scoped budget + matching gateway",
                 "answer_mode": "extractive_evidence", "upstream_liveness": "not_probed_by_this_endpoint"}
 
     @app.get("/api/workbench/projects")
@@ -141,6 +143,14 @@ def create_app(data=None, *, adapter=None, operator=None):
 
     @app.post("/api/workbench/projects/{project}/tasks")
     def enqueue(project: str, value: Task):
+        if value.task_type == "injection_experiment":
+            if value.kb_version is not None or value.approved_manifest_hash is not None or value.experiment is None:
+                raise ValueError("experiment accepts only explicit frozen experiment input")
+            if len(canonical(value.experiment)) > 1_048_576:
+                raise ValueError("experiment input too large")
+            return store.enqueue(project, value.task_type, value.experiment, value.idempotency_key)
+        if value.experiment is not None:
+            raise ValueError("experiment input only allowed for experiment tasks")
         if value.task_type == "journal_replay":
             if value.kb_version is not None or value.approved_manifest_hash is not None:
                 raise ValueError("replay does not accept KB parameters")
@@ -178,6 +188,56 @@ def create_app(data=None, *, adapter=None, operator=None):
     @app.get("/api/workbench/projects/{project}/plans/{plan_id}/package-preview")
     def package_preview(project: str, plan_id: str):
         return store.package_preview(project, plan_id)
+
+    @app.post("/api/workbench/projects/{project}/plans/{plan_id}/budget-approval")
+    def approve_budget(project: str, plan_id: str, value: PlanReview):
+        plan = next((p for p in store.plans(project) if p["plan_id"] == plan_id), None)
+        if plan is None or plan["version"] != value.reviewed_version:
+            raise Conflict("budget approval plan version mismatch")
+        return store.approve_experiment_budget(project, plan_id, value.reviewed_hash, operator)
+
+    @app.get("/api/workbench/projects/{project}/budgets/{grant_id}")
+    def experiment_budget(project: str, grant_id: str):
+        from workbench.backend.services.experiment_budget import ExperimentBudgets
+        summary = ExperimentBudgets(store.root).summary(grant_id)
+        if summary["project_id"] != project:
+            raise Missing("budget not found")
+        return summary
+
+    @app.get("/api/workbench/experiment-contract")
+    def experiment_contract():
+        from workbench.backend.services.injection_experiment import METRICS, source_hash
+        return dict(profile="prompt_injection_v1", source_snapshot_hash=source_hash(), metrics=METRICS,
+                    modes=["frozen_analysis", "regenerate"], regeneration_transport_enabled=True)
+
+    @app.post("/api/workbench/projects/{project}/tasks/{task_id}/report")
+    def export_report(project: str, task_id: str):
+        from workbench.backend.services.injection_report import build_report, render_report, verify_report
+        task = store.task(project, task_id)
+        if task["task_type"] != "injection_experiment" or task["execution_status"] != "completed" or task["validation_status"] != "passed":
+            raise Conflict("report requires a completed independently verified experiment")
+        record = Path(task["result"]["details"]["folder"])
+        expected = store.root / "experiments" / project / task_id
+        if record.resolve() != expected.resolve():
+            raise Conflict("result location does not belong to this task")
+        manifest, _ = build_report(record, store.root)
+        report_id = manifest["report_id"]
+        destination = store.root / "reports" / project / task_id / report_id
+        render_report(record, destination, data=store.root)
+        verify_report(destination, data=store.root)
+        prefix = f"/api/workbench/projects/{project}/tasks/{task_id}/reports/{report_id}"
+        return dict(report_id=report_id, index_url=prefix + "/index.html", markdown_url=prefix + "/report.md", manifest_url=prefix + "/report-manifest.json", review_status="pending_review")
+
+    @app.get("/api/workbench/projects/{project}/tasks/{task_id}/reports/{report_id}/{name:path}")
+    def report_file(project: str, task_id: str, report_id: str, name: str):
+        store.task(project, task_id)
+        identifier(report_id)
+        folder = store.root / "reports" / project / task_id / report_id
+        path = confined(folder, name)
+        if not path.is_file():
+            raise Missing("report file not found")
+        # No secret-bearing files are exported; passive report assets stay local.
+        return FileResponse(path, headers={"X-Content-Type-Options": "nosniff", "Content-Security-Policy": "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:"})
 
     @app.post("/api/workbench/projects/{project}/questions")
     def question(project: str, value: Question):

@@ -13,7 +13,7 @@ from workbench.backend.services.research_package import approve_plan, build_rese
 
 
 TERMINAL = {"completed", "failed", "timed_out", "cancelled", "interrupted"}
-TASK_TYPES = {"index_snapshot", "journal_replay"}
+TASK_TYPES = {"index_snapshot", "journal_replay", "injection_experiment"}
 
 
 class Conflict(ValueError):
@@ -272,7 +272,56 @@ class Store:
             if approved_at and any(current[d["document_id"]]["review"]["reviewed_at"] > approved_at for d in documents):
                 raise Conflict("plan approval predates a renewed evidence review")
             package, _ = build_research_package(project, "preview-only", 1, documents, value)
-            return dict(package=package, execution_enabled=False, reason="M2 execution and budget binding not yet implemented")
+            if "experiment" in package["config"]:
+                return dict(package=package, execution_enabled=True,
+                            reason="explicit inputs required; regeneration additionally requires separately approved budget and scoped gateway")
+            return dict(package=package, execution_enabled=False, reason="legacy preview only; choose explicit prompt_injection_v1 profile")
+
+    def _experiment_context(self, db, project, inputs, task_id="preview-only", attempt=1):
+        from workbench.backend.services.injection_experiment import validate_inputs, source_hash
+        from workbench.backend.services.experiment_budget import ExperimentBudgets
+        if set(inputs) != {"plan_id", "plan_hash", "experiment_input", "grant_id"}:
+            raise ValueError("experiment requires exact plan, inputs and budget binding")
+        row = db.execute("SELECT payload FROM plans WHERE project_id=? AND plan_id=? ORDER BY version DESC LIMIT 1", (project, identifier(inputs["plan_id"]))).fetchone()
+        if row is None:
+            raise Missing("plan not found")
+        plan = json.loads(row[0])
+        if plan_hash(plan) != inputs["plan_hash"]:
+            raise Conflict("approved plan/configuration changed")
+        version = db.execute("SELECT kb_version FROM snapshots WHERE project_id=? AND manifest_hash=?", (project, plan["approved_manifest_hash"])).fetchone()
+        if version is None:
+            raise Conflict("approved snapshot missing")
+        snapshot = self._snapshot(db, project, version[0])
+        if not self._snapshot_current(db, snapshot):
+            raise Conflict("experiment evidence is stale")
+        current = {d["document_id"]: d for d in self._documents(db, project)}
+        approved_at = plan.get("approval", {}).get("reviewed_at", "")
+        if approved_at and any(current[d["document_id"]]["review"]["reviewed_at"] > approved_at for d in snapshot["documents"]):
+            raise Conflict("plan approval predates renewed evidence review")
+        package, files = build_research_package(project, task_id, attempt, snapshot["documents"], plan)
+        value = validate_inputs(package, inputs["experiment_input"])
+        if package["source_snapshot_hash"] != source_hash():
+            raise Conflict("approved experiment source snapshot changed")
+        if value["mode"] == "regenerate":
+            ExperimentBudgets(self.root).validate(inputs["grant_id"], package)
+        elif inputs["grant_id"] is not None:
+            raise ValueError("frozen analysis cannot use a paid budget")
+        return package, files, snapshot["documents"], plan
+
+    def experiment_context(self, task):
+        with self.connect() as db:
+            return self._experiment_context(db, task["project_id"], task["input"], task["task_id"], task["attempt"])
+
+    def approve_experiment_budget(self, project, plan_id, reviewed_hash, operator):
+        from workbench.backend.services.experiment_budget import ExperimentBudgets
+        from workbench.backend.services.injection_experiment import contract
+        preview = self.package_preview(project, plan_id)["package"]
+        if preview["plan_hash"] != reviewed_hash or contract(preview)["mode"] != "regenerate":
+            raise Conflict("budget review requires exact approved regeneration plan")
+        grant = ExperimentBudgets(self.root).approve(project, reviewed_hash, preview["config"], operator)
+        with self.connect(True) as db:
+            self._audit(db, project, "experiment_budget_approval", grant["grant_id"], operator, grant)
+        return grant
 
     @staticmethod
     def _task(db, project, task_id):
@@ -298,6 +347,11 @@ class Store:
             if existing[1] != request_hash:
                 raise Conflict("idempotency key reused for different input")
             return self._task(db, project, existing[0])
+        if task_type == "injection_experiment":
+            self._experiment_context(db, project, inputs)
+            if db.execute("SELECT 1 FROM tasks WHERE project_id=? AND task_type=? AND input_hash=? AND (execution_status IN ('queued','running','cancel_requested') OR external_pending=1)",
+                          (project, task_type, digest(canonical(inputs)))).fetchone():
+                raise Conflict("same experiment already pending")
         if task_type == "index_snapshot":
             snapshot = self._snapshot(db, project, inputs["kb_version"])
             if not self._snapshot_current(db, snapshot) or inputs["approved_manifest_hash"] != snapshot["approved_manifest_hash"]:
@@ -330,6 +384,8 @@ class Store:
             task = self._task(db, project, task_id)
             if task["execution_status"] not in TERMINAL or task["external_pending"]:
                 raise Conflict("task still running or stop not confirmed")
+            if task["task_type"] == "injection_experiment" and task["execution_status"] == "completed":
+                raise Conflict("completed experiment cannot be retried; submit a separately authorized task")
             return self._enqueue(db, project, task["task_type"], task["input"], key, task["attempt"] + 1, task_id)
 
     def cancel(self, project, task_id):

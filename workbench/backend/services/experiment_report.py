@@ -11,8 +11,11 @@ def latex_escape(text):
     return "".join(replacements.get(c, c) for c in str(text))
 
 
-def render_report(folder, output):
+def render_report(folder, output, *, data=None):
     package, result, document = verify_record(folder)
+    if "experiment" in package["config"]:
+        from workbench.backend.services.injection_report import render_report as render_injection
+        return render_injection(folder, output, data=data)
     output = Path(output)
     output.mkdir(parents=True, exist_ok=True)
     metrics = [(k, result["metrics"].get(k, "not available")) for k in package["metrics"]]

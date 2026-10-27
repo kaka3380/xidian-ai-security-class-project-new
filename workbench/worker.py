@@ -9,6 +9,7 @@ import time
 
 from executor.protocol import canonical, digest
 from workbench.adapters.deeptutor import DeepTutor, verify_snapshot
+from workbench.adapters.executor02 import Executor02
 from workbench.backend.store import Store, TERMINAL
 from workbench.bridges.scientist02.replay import replay, validate_lock
 
@@ -45,10 +46,11 @@ def worker_lock(root):
 
 
 class Worker:
-    def __init__(self, store, adapter=None, *, timeout_seconds=600):
+    def __init__(self, store, adapter=None, *, timeout_seconds=600, executor=None):
         self.store = store
         self.adapter = adapter or DeepTutor()
         self.timeout_seconds = timeout_seconds
+        self.executor = executor or Executor02(store)
 
     def recover(self):
         # Repair the DB-commit -> artifact-write crash window without rerunning work.
@@ -57,6 +59,8 @@ class Worker:
                 if task["execution_status"] in TERMINAL and task["result"] is not None:
                     self._materialize_result(task)
         for task in self.store.outstanding():
+            if task["task_type"] == "injection_experiment" and task["external_pending"]:
+                continue  # Reconcile the exact external task; never submit again.
             if task["task_type"] == "index_snapshot" and task["external"].get("phase") == "submitted":
                 continue  # Poll recorded upstream identity; never POST again.
             if task["execution_status"] not in TERMINAL:
@@ -169,10 +173,71 @@ class Worker:
         except Exception as error:
             self.finish(task, "failed", "failed", {}, error=type(error).__name__ + ": " + str(error))
 
+    def _experiment(self, task):
+        pending = False
+        try:
+            package = self.executor.publish(task)
+            current = self.store.task(task["project_id"], task["task_id"])
+            if current["execution_status"] == "cancel_requested":
+                self.finish(task, "cancelled", "not_applicable", {"stop_confirmation": "before executor submission"})
+                return
+            external = dict(phase="submit_requested", executor=self.executor.identity, package_hash=package["package_hash"])
+            self.store.set_external(task, external, True)
+            pending = True
+            response = self.executor.submit(task)
+            if response["task_id"] != task["task_id"] or response["project_id"] != task["project_id"] or response["package_hash"] != package["package_hash"]:
+                raise ValueError("executor submission identity mismatch")
+            self.store.set_external(task, dict(external, phase="submitted"), True)
+        except Exception as error:
+            self.finish(task, "interrupted" if pending else "failed", "pending" if pending else "failed", {},
+                        error=type(error).__name__ + ": " + str(error), external_pending=pending)
+
+    def _poll_experiment(self, task):
+        stopped = False
+        try:
+            if task["external"].get("executor") != self.executor.identity:
+                raise ValueError("executor identity changed; cannot confirm stop")
+            state = self.executor.cancel(task) if task["execution_status"] == "cancel_requested" else self.executor.status(task)
+            if any(state[k] != expected for k, expected in (("task_id", task["task_id"]), ("project_id", task["project_id"]), ("package_hash", task["external"]["package_hash"]))):
+                raise ValueError("executor status identity mismatch")
+            stopped = state["execution_status"] in TERMINAL | {"not_found"} and state.get("process_alive") is False
+            if not stopped:
+                self.store.set_external(task, task["external"], True)
+                return
+            if task["execution_status"] == "interrupted":
+                self.store.clear_external_pending(task)
+                return
+            if state["execution_status"] == "not_found":
+                self.finish(task, "interrupted", "pending", {}, error="submission absent; no automatic resubmission")
+                return
+            folder, result = self.executor.collect(task)
+            from workbench.backend.services.experiment_result import verify_record, register_record
+            package, checked, _ = verify_record(folder)
+            if checked != result or package["package_hash"] != task["external"]["package_hash"] or result["execution_status"] != state["execution_status"]:
+                raise ValueError("collected result differs from polled task")
+            usage = {"model_requests": 0, "budget_cny": 0}
+            if package["config"]["experiment"]["mode"] == "regenerate":
+                from workbench.backend.services.experiment_budget import ExperimentBudgets
+                budgets = ExperimentBudgets(self.store.root)
+                usage = budgets.validate(task["input"]["grant_id"], package)
+                if result["validation_status"] == "passed":
+                    responses = json.loads((folder / "experiments/responses.json").read_bytes())
+                    usage = budgets.verify_responses(task["input"]["grant_id"], package, responses)
+            registration = register_record(folder, self.store.root / "experiments.sqlite")
+            self.finish(task, result["execution_status"], result["validation_status"], dict(registration, folder=str(folder),
+                        metrics=result["metrics"], usage=usage, package_hash=package["package_hash"],
+                        research_validation_status="pending", stop_confirmation="executor supervisor and container stopped"), error=result.get("failure_reason"))
+        except Exception as error:
+            self.finish(task, "failed" if stopped else "interrupted", "failed" if stopped else "pending", {},
+                        error=type(error).__name__ + ": " + str(error), external_pending=not stopped)
+
     def tick(self):
         outstanding = self.store.outstanding()
         if outstanding:
             task = outstanding[0]
+            if task["task_type"] == "injection_experiment":
+                self._poll_experiment(task)
+                return True
             if task["task_type"] == "index_snapshot" and task["external"].get("kb_name"):
                 # Do not switch upstream addresses after restart/config changes.
                 if task["external"].get("api_url") != self.adapter.base_url:
@@ -184,6 +249,8 @@ class Worker:
             return False
         if task["task_type"] == "index_snapshot":
             self._index(task)
+        elif task["task_type"] == "injection_experiment":
+            self._experiment(task)
         else:
             self._replay(task)
         return True

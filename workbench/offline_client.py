@@ -69,17 +69,18 @@ def create_mock_package(task, *, project="offline-demo", duration=0.2, timeout=1
             shutil.rmtree(staging)
 
 
-def collect_verified(task, project):
+def collect_verified(task, project, *, data=None):
     receipt = invoke("collect", task, project)
     source = confined(EXCHANGE, identifier(task))
     package = json.loads((source / "research_package.json").read_text(encoding="utf-8"))
     real = package.get("schema_version") == 2
     if real:
         from workbench.backend.services.research_package import validate_frozen_package
-        document = json.loads((source / "approved-document.json").read_text(encoding="utf-8"))
+        documents_path = source / "approved-documents.json"
+        documents = json.loads(documents_path.read_bytes()) if documents_path.exists() else [json.loads((source / "approved-document.json").read_bytes())]
         plan = json.loads((source / "approved-plan.json").read_text(encoding="utf-8"))
         files = {doc["path"]: confined(source, doc["path"]).read_bytes() for doc in package["documents"]}
-        validate_frozen_package(package, files, documents=[document], plan=plan)
+        validate_frozen_package(package, files, documents=documents, plan=plan)
         package_hash = package["package_hash"]
     else:
         package_hash = validate_package(package, source, require_current_source=False)
@@ -94,7 +95,7 @@ def collect_verified(task, project):
         raise ValueError("receipt mismatch")
     if result["validation_status"] == "passed" and (result["execution_status"] != "completed" or not all(m in result["metrics"] for m in package["metrics"])):
         raise ValueError("missing required metrics")
-    parent = DATA / identifier(project)
+    parent = Path(data or DATA) / identifier(project)
     parent.mkdir(parents=True, exist_ok=True)
     target = parent / task
     staging = Path(tempfile.mkdtemp(prefix=".receive-", dir=parent))
@@ -102,7 +103,7 @@ def collect_verified(task, project):
         seen = set()
         for artifact in result["artifacts"]:
             name = artifact["path"]
-            allowed = name.startswith("experiments/") or name in {"engine.log", "ideas.json", "ideas.py", "bfts_config.yaml", "adapter.json", "dataset.npz"} if real else name.startswith("artifacts/")
+            allowed = name.startswith(("experiments/", "runtime/")) or name in {"engine.log", "ideas.json", "ideas.py", "bfts_config.yaml", "adapter.json", "dataset.npz", "experiment-input.json", "source-snapshot.json"} if real else name.startswith("artifacts/")
             if not allowed or name in seen:
                 raise ValueError("invalid artifact path")
             seen.add(name)
@@ -115,12 +116,19 @@ def collect_verified(task, project):
         (staging / "result.json").write_bytes(canonical(result))
         (staging / "research_package.json").write_bytes(canonical(package))
         if real:
-            for name, value in (("approved-document.json", document), ("approved-plan.json", plan)):
+            for name, value in (("approved-documents.json", documents), ("approved-plan.json", plan)):
                 (staging / name).write_bytes(canonical(value))
+            if not documents_path.exists():
+                (staging / "approved-document.json").write_bytes(canonical(documents[0]))
+            if "experiment" in package["config"]:
+                shutil.copyfile(source / "experiment-input.json", staging / "experiment-input.json")
             for name, data in files.items():
                 target_input = confined(staging, name)
                 target_input.parent.mkdir(parents=True, exist_ok=True)
                 target_input.write_bytes(data)
+        if real:
+            from workbench.backend.services.experiment_result import verify_record
+            verify_record(staging)
         if target.exists():
             for path in staging.rglob("*"):
                 if path.is_file() and file_hash(confined(target, path.relative_to(staging).as_posix())) != file_hash(path):
