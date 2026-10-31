@@ -1,7 +1,6 @@
-# 阶段 A：Ubuntu / 02 / GPU 环境底座
+# Linux 与 GPU 环境部署
 
-对应根目录《01-02-Linux部署与四项目集成实施方案》第 9 节阶段 A。
-实际验收结果见 `阶段A-环境验收记录-2026-10-22.md`，原始证据在 `evidence/`。
+本文保留 Ubuntu、项目02及 GPU 环境的安装与运行步骤。最终交付范围和验证边界见[课程作业报告](../../submissions/26241215467/README.md)；本地过程记录与原始运行证据不随课程提交发布。
 
 ## 环境位置
 
@@ -77,6 +76,6 @@ wsl -d Ubuntu-24.04 -u research --exec /bin/bash /mnt/e/work/ai-security-class-p
 
 GPU 验收执行固定种子 256×256 CUDA 矩阵乘法，并与 CPU 结果比较；只有 CUDA 可用且数值检查通过才成功。容器以 UID 1000、4 CPU、4GiB 内存、256 PID、只读文件系统、断网运行；另测项目入口导入。验收容器自动退出，不挂载 Docker socket。
 
-阶段 B 已完成模拟任务协议、执行器及离线验收，见 [README-stage-b.md](README-stage-b.md)。此镜像是阶段 A 环境验收基础；阶段 B 的超时与取消仅针对模拟进程，真实容器生命周期、计费预算和生成代码监管留待后续阶段。
+工作台的任务、实验执行与报告使用方式见[工作台说明](../../workbench/README.md)。环境与入口检查不等同于完整科研流程通过，实际完成范围和已知问题见[课程作业报告](../../submissions/26241215467/README.md)。
 
 依据：[WSL 安装命令](https://learn.microsoft.com/en-us/windows/wsl/basic-commands)、[Docker WSL 集成](https://docs.docker.com/desktop/features/wsl/)、[PyTorch 2.6.0 配套版本](https://pytorch.org/get-started/previous-versions/)、[uv 依赖锁定](https://docs.astral.sh/uv/pip/compile/)。

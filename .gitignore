@@ -37,3 +37,23 @@ browser_data/
 /outputs/
 /deploy/linux/evidence/
 
+
+# Local process notes; retain on disk, exclude from course submissions
+/01-02-Linux部署与四项目集成实施方案.md
+/A-具体任务与验收清单.md
+/AI科研工作台-简化架构方案.md
+/B-具体任务与验收清单.md
+/C-具体任务与验收清单.md
+/deploy/linux/README-stage-b.md
+/deploy/linux/README-stages-c-f.md
+/deploy/linux/阶段A-环境验收记录-2026-10-22.md
+/deploy/linux/阶段B-离线交接验收记录-2026-10-22.md
+/workbench/tests/README.md
+/作业计划表-项目1-4.md
+/四项目环境核查-2026-10-21.md
+/项目02-本地部署方案-待审核.md
+/项目03-04-功能核查与联通说明.md
+/项目03-04-打通复核结果-2026-10-21.md
+/项目04-AI功能排查记录.md
+/项目04-首次跑通与验收记录.md
+/验收后整合方案-2026-10-24.md
