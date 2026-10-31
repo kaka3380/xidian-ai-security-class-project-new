@@ -242,7 +242,7 @@ def save_run(cfg: Config, journal, stage_name: str = None):
         raise
     # save the best found solution
     try:
-        best_node = journal.get_best_node(only_good=False, cfg=cfg)
+        best_node = journal.get_best_node(only_good=True, cfg=cfg)
         if best_node is not None:
             for existing_file in save_dir.glob("best_solution_*.py"):
                 existing_file.unlink()

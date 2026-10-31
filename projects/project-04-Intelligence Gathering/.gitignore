@@ -13,8 +13,8 @@ __pycache__/
 .uv-cache*/
 .uv-python/
 browser_data/
-data/
-knowledge/
+/data/
+/knowledge/
 external/
 output/
 tmp/

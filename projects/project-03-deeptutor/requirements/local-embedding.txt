@@ -1,0 +1,2 @@
+# Optional CPU model server; mirrors the local-embedding source extra.
+fastembed>=0.9,<0.10

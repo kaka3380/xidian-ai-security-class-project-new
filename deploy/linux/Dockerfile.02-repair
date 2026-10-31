@@ -1,0 +1,7 @@
+FROM research/scientist02:stage-a-20261022
+USER root
+COPY psutil.lock /tmp/psutil.lock
+RUN uv pip install --system --no-cache --require-hashes -r /tmp/psutil.lock && uv pip check --system
+COPY launch_scientist_bfts.py /opt/scientist02/launch_scientist_bfts.py
+USER 1000:1000
+RUN python -c "import psutil; assert psutil.__version__ == '7.2.2'"

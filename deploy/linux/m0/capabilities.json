@@ -1,0 +1,65 @@
+{
+  "schema_version": 1,
+  "as_of": "2026-10-24",
+  "service_liveness": "not_probed",
+  "historical_evidence_lock": "deploy/linux/m0/evidence-lock.json",
+  "capabilities": [
+    {
+      "id": "scientist02.runtime_image",
+      "status": "offline_verified",
+      "evidence": "outputs/integration-m0-20261024/image-attempt-02/acceptance.json",
+      "image_id": "sha256:a0e0b6e832833d9b0f7133b8fe74d15422410990f49416f10eb21904739f71b7",
+      "scope": "Frozen parent layers and source patches, TeX/Poppler version checks and four real Journal reconstructions; no model stage rerun"
+    },
+    {
+      "id": "scientist02.journal_replay",
+      "status": "offline_verified",
+      "evidence": "outputs/integration-m0-20261024/replay-attempt-01/stage-result.json",
+      "scope": "Four explicit stage names, journal v2, graph reconstruction and hash integrity; not general checkpoint resume",
+      "research_validation_status": "pending"
+    },
+    {
+      "id": "scientist02.experiments",
+      "status": "historically_functional",
+      "evidence": "outputs/02-functional-check-20261024/README.md",
+      "scope": "Single seed and frozen-answer pilot only; invalid candidates retained",
+      "research_validation_status": "pending"
+    },
+    {
+      "id": "scientist02.summary",
+      "status": "historically_functional",
+      "evidence": "outputs/02-functional-check-20261024/artifacts/summary-result.json",
+      "scope": "Native model summary previously ran; M0 reconstructs journal inputs without reissuing paid requests"
+    },
+    {
+      "id": "scientist02.multi_seed",
+      "status": "blocked",
+      "evidence": "outputs/integration-m0-20261024/replay-attempt-01/journal-evidence.json",
+      "scope": "Four seed aggregation errors in the historical single-seed run; requires dedicated repair and validation"
+    },
+    {
+      "id": "scientist02.online_references",
+      "status": "historically_blocked",
+      "evidence": "outputs/02-functional-check-20261024/README.md",
+      "scope": "Historical Semantic Scholar HTTP 429; no current online request made"
+    },
+    {
+      "id": "scientist02.paper",
+      "status": "historically_functional",
+      "evidence": "outputs/02-functional-check-20261024/artifacts/paper/provenance.json",
+      "scope": "Independent writeup/compile/review test mixes attempt05 summary and attempt04 figure; unresolved citations, not an approved paper",
+      "research_validation_status": "pending",
+      "review_status": "pending_review"
+    },
+    {
+      "id": "workbench.unified_workflow",
+      "status": "pending_m1",
+      "scope": "Persistent API/worker/UI and approved 03 index versions remain to be implemented"
+    },
+    {
+      "id": "researcher01",
+      "status": "optional_deferred",
+      "scope": "M4 optional engine; not a first-release acceptance dependency"
+    }
+  ]
+}

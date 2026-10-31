@@ -1192,8 +1192,21 @@ If you believe you are done with reflection, simply say: "I am done"."""
         # Get new reflection_page_info
         reflection_page_info = get_reflection_page_info(reflection_pdf, page_limit)
 
-        final_reflection_prompt = """{reflection_page_info}
-USE MINIMAL EDITS TO OPTIMIZE THE PAGE LIMIT USAGE."""
+        with open(writeup_file, "r") as f:
+            current_latex = f.read()
+        final_reflection_prompt = f"""{reflection_page_info}
+USE MINIMAL EDITS TO OPTIMIZE THE PAGE LIMIT USAGE.
+Preserve the research topic, measured results, citations and LaTeX template.
+Do not invent experiments or switch to another paper. If no changes are needed,
+say "I am done"; otherwise return the complete updated LaTeX in a latex code block.
+
+Research context:
+{idea_text}
+
+Current paper:
+```latex
+{current_latex}
+```"""
         reflection_response, msg_history = get_response_from_llm(
             prompt=final_reflection_prompt,
             client=big_client,
@@ -1208,6 +1221,7 @@ USE MINIMAL EDITS TO OPTIMIZE THE PAGE LIMIT USAGE."""
         )
         # Compile current version before reflection
         print(f"[green]Compiling PDF for reflection final page limit...[/green]")
+        compile_latex(latex_folder, reflection_pdf)
 
         print(f"reflection step {i+1}")
 

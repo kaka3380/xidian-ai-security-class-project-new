@@ -104,6 +104,9 @@ quiz = "deeptutor.reading.quiz:ReadingQuizExtension"
 translation = "deeptutor.reading.translation:TranslationExtension"
 
 [project.optional-dependencies]
+# Optional CPU model server used by scripts/local_embeddings.py.
+local-embedding = ["fastembed>=0.9,<0.10"]
+
 # Compatibility extra for source installs and older docs. These packages are
 # already included in the public `deeptutor` wheel; the local CLI-only project
 # under `packaging/deeptutor-cli` uses the same list without Web assets/server deps.

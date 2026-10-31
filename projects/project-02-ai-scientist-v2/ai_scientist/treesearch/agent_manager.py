@@ -216,7 +216,8 @@ Your research idea:\n\n
     def _curate_task_desc(self, stage: Stage) -> str:
         task_desc = self._get_task_desc_str()
 
-        if stage.name.startswith("3_"):
+        # Dataset and method constraints apply to the initial implementation too.
+        if "Experiments" in self.task_desc:
             if isinstance(self.task_desc["Experiments"], list):
                 if isinstance(self.task_desc["Experiments"][0], str):
                     experiment_str = "\n".join(self.task_desc["Experiments"])
@@ -235,7 +236,7 @@ Your research idea:\n\n
                     f"Experiments is not a list or string: {self.task_desc['Experiments']}"
                 )
             task_desc += "Experiment Plan: " + experiment_str + "\n"
-        elif stage.name.startswith("4_"):
+        if "Risk Factors and Limitations" in self.task_desc:
             if isinstance(self.task_desc["Risk Factors and Limitations"], list):
                 risk_factors_str = "\n".join(
                     self.task_desc["Risk Factors and Limitations"]
@@ -416,7 +417,7 @@ Your research idea:\n\n
             print(
                 f"[green]Stage {stage.name} completed: reached max iterations[/green]"
             )
-            if stage.stage_number == 1:
+            if stage.stage_number == 1 and not journal.good_nodes:
                 # For initial stage, if it didn't even find a working implementation until max iterations,
                 # end gracefully and stop the experiment.
                 logger.error(

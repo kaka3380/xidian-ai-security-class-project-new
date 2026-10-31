@@ -30,13 +30,14 @@ import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 
 from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
 from .routers import crawler_router, data_router, scientist_router, websocket_router
+from .routers.deeptutor import router as deeptutor_router
 
 # Project root directory (used for running subprocesses like uv run main.py)
 PROJECT_ROOT = Path(__file__).parent.parent
@@ -69,6 +70,12 @@ app.include_router(crawler_router, prefix="/api")
 app.include_router(data_router, prefix="/api")
 app.include_router(scientist_router, prefix="/api")
 app.include_router(websocket_router, prefix="/api")
+app.include_router(deeptutor_router)
+
+
+@app.get('/workbench', include_in_schema=False)
+def research_workbench():
+    return RedirectResponse('http://127.0.0.1:8090/workbench')
 
 
 @app.get("/")

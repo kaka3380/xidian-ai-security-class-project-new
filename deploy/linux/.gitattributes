@@ -1,0 +1,4 @@
+# Linux scripts and hash-locked inputs must survive Windows Git checkouts.
+* text eol=lf
+# Preserve the exact bytes of captured command output and JSON evidence.
+evidence/** -text
