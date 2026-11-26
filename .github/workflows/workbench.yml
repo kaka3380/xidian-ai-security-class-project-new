@@ -1,0 +1,75 @@
+name: Workbench offline checks
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  offline:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install locked project04 environment
+        run: |
+          python -m pip install uv==0.12.10
+          uv sync --frozen --python 3.11 --project "projects/project-04-Intelligence Gathering"
+      - name: Locate project04 Python
+        id: project-python
+        shell: bash
+        run: |
+          case "$RUNNER_OS" in
+            Windows) python_bin="projects/project-04-Intelligence Gathering/.venv/Scripts/python.exe" ;;
+            *) python_bin="projects/project-04-Intelligence Gathering/.venv/bin/python" ;;
+          esac
+          printf 'executable=%s\n' "$python_bin" >> "$GITHUB_OUTPUT"
+      - name: Run offline smoke check
+        shell: bash
+        env:
+          PROJECT_PYTHON: ${{ steps.project-python.outputs.executable }}
+        run: '"$PROJECT_PYTHON" -m workbench.verify_offline outputs/ci-offline'
+      - name: Run offline regression suite
+        if: ${{ !cancelled() && steps.project-python.outcome == 'success' }}
+        shell: bash
+        env:
+          PROJECT_PYTHON: ${{ steps.project-python.outputs.executable }}
+        run: |
+          "$PROJECT_PYTHON" -m pytest -q -rs \
+            --junitxml=outputs/ci-pytest.xml \
+            workbench/tests/test_workbench_m1.py \
+            workbench/tests/test_scientist02_journal.py \
+            workbench/tests/test_offline_protocol.py \
+            workbench/tests/test_experiment_gateway.py \
+            workbench/tests/test_injection_experiment.py \
+            workbench/tests/test_injection_report.py
+      - name: Upload offline verification artifacts
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: workbench-offline-${{ matrix.os }}
+          path: |
+            outputs/ci-offline/report/
+            outputs/ci-pytest.xml
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: projects/project-04-Intelligence Gathering/webui
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci
+      - run: npm run build

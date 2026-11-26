@@ -59,10 +59,13 @@ class ProtocolTests(unittest.TestCase):
         with patch.object(client.subprocess, "run") as run:
             run.return_value.stdout = b'{"engines":["mock"]}'
             run.return_value.returncode = 0
-            client.invoke("status", "safe", "project")
+            settings = ("Custom Distro", "student", "/home/student/runtime", "/mnt/d/course with spaces/workbench/exchange")
+            client.invoke("status", "safe", "project", settings=settings)
             args, kwargs = run.call_args
             self.assertIsInstance(args[0], list)
             self.assertEqual(args[0][-3:], ["status", "safe", "project"])
+            self.assertEqual(args[0][:7], ["wsl.exe", "-d", "Custom Distro", "-u", "student", "--exec", "env"])
+            self.assertIn("WORKBENCH_EXECUTOR_EXCHANGE=/mnt/d/course with spaces/workbench/exchange", args[0])
             self.assertNotIn("shell", kwargs)
 
     @unittest.skipUnless(__import__("os").name == "nt", "Windows sharing retry")

@@ -25,7 +25,8 @@ def verify(folder, data=None):
         if task["external"].get("package_hash") != package["package_hash"]:
             raise ValueError("task ledger package differs")
         responses = json.loads((folder / "experiments/responses.json").read_bytes())
-        budget = ExperimentBudgets(data).verify_responses(task["input"]["grant_id"], package, responses)
+        raw = [json.loads(line) for line in (folder / "experiments/raw-responses.jsonl").read_bytes().splitlines()]
+        budget = ExperimentBudgets(data).verify_responses(task["input"]["grant_id"], package, responses, raw_responses=raw)
     return dict(task_id=package["task_id"], package_hash=package["package_hash"], result_hash=digest(canonical(result)),
                 validation_status="passed", review_status="pending_review", verified=verified, budget=budget,
                 scope="saved exact-answer/marker benchmark; provenance checks do not establish scientific validity")

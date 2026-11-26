@@ -1,10 +1,11 @@
-"""Real API/Worker/WSL/Docker acceptance using approved synthetic frozen fixtures.
+"""Real API/Worker/Docker acceptance using approved synthetic frozen fixtures.
 
 Never starts a model gateway, reads provider keys, or regenerates model answers.
 Run explicitly after Docker and the pinned image are available.
 """
 import argparse
 import json
+import os
 from pathlib import Path
 import sqlite3
 import subprocess
@@ -18,6 +19,7 @@ import uvicorn
 from executor.protocol import canonical, digest
 from workbench.backend.api.app import create_app
 from workbench.backend.store import Store, TERMINAL
+from workbench.offline_client import docker_host_args, docker_host_environment, wsl_prefix
 from workbench.verify_experiment import verify as independent_verify
 from workbench.worker import Worker
 
@@ -27,10 +29,11 @@ def verify(output):
     output.mkdir(parents=True, exist_ok=False)
     # Fixture approvals are deliberately confined to this synthetic database.
     sys.path.insert(0, str(Path(__file__).resolve().parent / "tests"))
-    from test_injection_experiment import experiment, snapshot, store
+    from test_injection_experiment import IMAGE, experiment, snapshot, store
     repository = store.__wrapped__(output / "synthetic")
     version = snapshot.__wrapped__(repository)
-    inputs = experiment.__wrapped__(repository, version)
+    image = os.environ.get("WORKBENCH_SCIENTIST02_IMAGE", IMAGE)
+    inputs = experiment.__wrapped__(repository, version, image=image)
     if inputs["grant_id"] is not None or repository.plans("p")[0]["config"]["budget_cny"] != 0:
         raise ValueError("this acceptance only permits zero-budget frozen fixtures")
     app = create_app(repository.root, operator="synthetic-container-acceptance")
@@ -57,9 +60,9 @@ def verify(output):
             save("submitted-task.json", task)
             print(json.dumps(dict(stage="submitted", task_id=task["task_id"])), flush=True)
             worker = Worker(repository)
-            worker.tick()  # Real WSL submission and Docker supervisor, no adapter double.
+            worker.tick()
             submitted = repository.task("p", task["task_id"])
-            save("after-wsl-submit.json", submitted)
+            save("after-submit.json", submitted)
             if submitted["execution_status"] in TERMINAL:
                 raise RuntimeError("submission failed: " + str(submitted["last_error"]))
             # Reopen SQLite and recreate the Worker before reconciliation.
@@ -86,8 +89,14 @@ def verify(output):
             verified = independent_verify(record)
             save("independent-recalculation.json", verified)
             assert verified["verified"]["metrics"] == dict(attack_success_rate=0.5, clean_task_accuracy=1, valid_response_rate=2 / 3)
-            command = ["wsl.exe", "-d", "Ubuntu-24.04", "-u", "research", "--exec", "docker", "container", "inspect", "research-" + task["task_id"]]
-            inspected = subprocess.run(command, capture_output=True, timeout=20, check=True)
+            if worker.executor.backend == "wsl":
+                prefix = [*wsl_prefix(worker.executor.wsl_settings()), "docker"]
+                env = None
+            else:
+                prefix = docker_host_args(worker.executor.endpoint)
+                env = docker_host_environment()
+            command = [*prefix, "container", "inspect", "research-" + task["task_id"]]
+            inspected = subprocess.run(command, capture_output=True, timeout=20, check=True, env=env)
             info = json.loads(inspected.stdout)[0]
             environment = dict(entry.split("=", 1) for entry in info["Config"]["Env"] if "=" in entry)
             assert info["HostConfig"]["NetworkMode"] == "none"
@@ -96,13 +105,14 @@ def verify(output):
             assert info["State"]["Running"] is False and info["State"]["ExitCode"] == 0
             assert not environment.get("OPENAI_API_KEY") and not environment.get("EXPERIMENT_TOKEN")
             package = json.loads((record / "research_package.json").read_bytes())
-            assert info["Image"] == package["image"]
+            approved_image = subprocess.check_output([*prefix, "image", "inspect", package["image"], "--format", "{{.Id}}"], timeout=20, text=True, env=env).strip()
+            assert info["Image"] == approved_image
             assert info["Config"]["Labels"]["research.package_hash"] == package["package_hash"]
             save("container.json", dict(container_id=info["Id"], image=info["Image"], state=info["State"], network="none",
                  readonly_rootfs=True, cap_drop=info["HostConfig"]["CapDrop"], labels=info["Config"]["Labels"], provider_credential_present=False))
             with sqlite3.connect(repository.root / "experiments.sqlite") as db:
                 assert db.execute("SELECT COUNT(*) FROM experiments").fetchone()[0] == 1
-            result = dict(status="passed", scope="real localhost API -> SQLite -> Worker restart -> WSL -> pinned 02 Docker image -> independent verifier -> result ledger; synthetic frozen answers only",
+            result = dict(status="passed", scope="real localhost API -> SQLite -> Worker restart -> pinned Docker image -> independent verifier -> result ledger; synthetic frozen answers only",
                 task_id=task["task_id"], package_hash=package["package_hash"], source_hash=package["source_snapshot_hash"], image=package["image"],
                 approved_fixture_documents=5, duplicate_same_task=True, worker_restart_reconciled=True, unique_registered_results=1,
                 metrics=verified["verified"]["metrics"], paid_model_requests=0, budget_cny=0, review_status="pending_review",

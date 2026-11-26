@@ -15,14 +15,14 @@ import uvicorn
 from executor.protocol import canonical, digest
 from workbench.backend.api.app import create_app
 from workbench.backend.services.experiment_budget import ExperimentBudgets
-from workbench.backend.services.injection_experiment import source_hash, validate_inputs
+from workbench.backend.services.injection_experiment import source_hash, validate_inputs, validate_provider
 from workbench.backend.services.research_package import plan_hash
 from workbench.backend.store import Store, TERMINAL
 from workbench.verify_experiment import verify
 from workbench.worker import Worker, worker_lock
 
 
-def run(review, output, data, key_file, *, apply_confirmed_approval=False):
+def run(review, output, data, key_file, *, apply_confirmed_approval=False, provider_profile=None):
     if not apply_confirmed_approval:
         raise ValueError("explicit approval of the exact review package and new budget is required")
     review, output = Path(review).resolve(), Path(output).resolve()
@@ -34,6 +34,9 @@ def run(review, output, data, key_file, *, apply_confirmed_approval=False):
         raise ValueError("reviewed plan, sample, catalog or source changed")
     if plan["config"]["budget_cny"] != identity["budget_cny"] or plan["config"]["max_requests"] != identity["max_requests"]:
         raise ValueError("reviewed budget changed")
+    provider = validate_provider(json.loads(Path(provider_profile).read_bytes())) if provider_profile else None
+    if provider != plan["config"]["experiment"].get("provider"):
+        raise ValueError("local gateway configuration differs from the approved provider")
     validate_inputs(plan, dict(dataset=dataset, responses=None))
     store = Store(data)
     if store.outstanding():
@@ -41,8 +44,8 @@ def run(review, output, data, key_file, *, apply_confirmed_approval=False):
     output.mkdir(parents=True, exist_ok=False)
     def save(name, value):
         (output / name).write_bytes(canonical(value))
-    save("human-authorization.json", dict(user_confirmation="批准此方案和新预算 1 元，执行 24 次请求", reviewed=identity,
-        recorded_at=datetime.now(timezone.utc).isoformat(), scope="exact synthetic prompts to official DeepSeek; report free; no abstract content sent"))
+    save("human-authorization.json", dict(authorization_method="explicit operator confirmation flag", reviewed=identity,
+        recorded_at=datetime.now(timezone.utc).isoformat(), scope="exact frozen input, configured provider and reviewed budget"))
     app = create_app(store.root)
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=0, log_level="error"))
     thread = Thread(target=server.run, daemon=True)
@@ -76,8 +79,13 @@ def run(review, output, data, key_file, *, apply_confirmed_approval=False):
                     reservation.bind(("127.0.0.1", 0))
                     gateway_port = reservation.getsockname()[1]
                 gateway_stream = (output / "gateway.log").open("wb")
-                gateway = subprocess.Popen([sys.executable, "-m", "workbench.backend.services.model_gateway", "--key-file", str(Path(key_file).resolve()),
-                    "--runtime", str(runtime), "--port", str(gateway_port), "--workbench-data", str(store.root)],
+                gateway_args = [sys.executable, "-m", "workbench.backend.services.model_gateway", "--key-file", str(Path(key_file).resolve()),
+                    "--runtime", str(runtime), "--port", str(gateway_port), "--workbench-data", str(store.root)]
+                if provider is not None:
+                    frozen_profile = runtime / "provider-profile.json"
+                    frozen_profile.write_bytes(canonical(provider))
+                    gateway_args.extend(["--provider-profile", str(frozen_profile)])
+                gateway = subprocess.Popen(gateway_args,
                     stdout=gateway_stream, stderr=subprocess.STDOUT, cwd=Path(__file__).resolve().parent.parent,
                     creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0)
                 deadline = time.monotonic() + 10
@@ -153,6 +161,8 @@ if __name__ == "__main__":
     parser.add_argument("output", type=Path)
     parser.add_argument("--data", type=Path, default=Path("workbench/data"))
     parser.add_argument("--key-file", type=Path, required=True)
+    parser.add_argument("--provider-profile", type=Path)
     parser.add_argument("--apply-confirmed-approval", action="store_true")
     args = parser.parse_args()
-    print(canonical(run(args.review, args.output, args.data, args.key_file, apply_confirmed_approval=args.apply_confirmed_approval)).decode())
+    print(canonical(run(args.review, args.output, args.data, args.key_file,
+                        apply_confirmed_approval=args.apply_confirmed_approval, provider_profile=args.provider_profile)).decode())

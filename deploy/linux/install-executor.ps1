@@ -1,12 +1,27 @@
+[CmdletBinding()]
+param(
+    [string]$Distribution = $env:WORKBENCH_WSL_DISTRO,
+    [string]$LinuxUser = $env:WORKBENCH_WSL_USER,
+    [string]$Runtime = $env:WORKBENCH_WSL_RUNTIME
+)
 $ErrorActionPreference = 'Stop'
+if ($Distribution -notmatch '^[A-Za-z0-9][A-Za-z0-9_. -]*$' -or
+    $LinuxUser -notmatch '^[A-Za-z0-9_][A-Za-z0-9_.-]*$' -or
+    $Runtime -notmatch '^/[^\r\n]+$' -or ($Runtime -split '/') -contains '..' -or ($Runtime -split '/') -contains '.') {
+    throw 'Set the WSL distribution, Linux user and an absolute Linux runtime path.'
+}
+$Runtime = $Runtime.TrimEnd('/')
+$wslArgs = @('-d', $Distribution, '-u', $LinuxUser, '--exec')
 $repo = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '../..')).Path
-if ($repo -ne 'E:\work\ai-security-class-project') { throw 'This deployment targets the configured E: workspace.' }
-$source = '/mnt/e/work/ai-security-class-project/executor'
-$target = '/home/research/research-runtime/executor'
-& wsl.exe -d Ubuntu-24.04 -u research --exec /usr/bin/install -d $target
+$linuxRepo = & wsl.exe @wslArgs wslpath -a $repo
+if ($LASTEXITCODE -ne 0 -or -not $linuxRepo) { throw 'Cannot resolve the repository path in Ubuntu WSL' }
+$linuxRepo = $linuxRepo.TrimEnd('/')
+$source = "$linuxRepo/executor"
+$target = "$Runtime/executor"
+& wsl.exe @wslArgs /usr/bin/install -d $target
 if ($LASTEXITCODE -ne 0) { throw 'Cannot create executor directory' }
-foreach ($name in @('protocol.py', 'main.py', 'container_tasks.py')) {
-    & wsl.exe -d Ubuntu-24.04 -u research --exec /usr/bin/install -m 644 "$source/$name" "$target/$name"
+foreach ($name in @('protocol.py', 'main.py', 'container_tasks.py', 'host.py')) {
+    & wsl.exe @wslArgs /usr/bin/install -m 644 "$source/$name" "$target/$name"
     if ($LASTEXITCODE -ne 0) { throw "Cannot install $name" }
 }
 $files = @(
@@ -19,15 +34,16 @@ $files = @(
     'workbench/adapters/scientist02.py'
 )
 foreach ($file in $files) {
-    $destination = '/home/research/research-runtime/' + $file
+    $destination = "$Runtime/$file"
     $parent = $destination.Substring(0, $destination.LastIndexOf('/'))
-    & wsl.exe -d Ubuntu-24.04 -u research --exec /usr/bin/install -d $parent
+    & wsl.exe @wslArgs /usr/bin/install -d $parent
     if ($LASTEXITCODE -ne 0) { throw 'Cannot create runtime module directory' }
-    & wsl.exe -d Ubuntu-24.04 -u research --exec /usr/bin/install -m 644 ('/mnt/e/work/ai-security-class-project/' + $file) $destination
+    & wsl.exe @wslArgs /usr/bin/install -m 644 "$linuxRepo/$file" $destination
     if ($LASTEXITCODE -ne 0) { throw "Cannot install $file" }
 }
-& wsl.exe -d Ubuntu-24.04 -u research --exec /usr/bin/install -d /home/research/research-runtime/support
-& wsl.exe -d Ubuntu-24.04 -u research --exec /usr/bin/install -m 644 /mnt/e/work/ai-security-class-project/deploy/linux/frozen_experiment.py /home/research/research-runtime/support/frozen_experiment.py
+& wsl.exe @wslArgs /usr/bin/install -d "$Runtime/support"
+if ($LASTEXITCODE -ne 0) { throw 'Cannot create support directory' }
+& wsl.exe @wslArgs /usr/bin/install -m 644 "$linuxRepo/deploy/linux/frozen_experiment.py" "$Runtime/support/frozen_experiment.py"
 if ($LASTEXITCODE -ne 0) { throw 'Cannot install experiment support' }
-& wsl.exe -d Ubuntu-24.04 -u research --exec /home/research/research-runtime/engines/02/.venv/bin/python "$target/main.py" probe
+& wsl.exe @wslArgs "$Runtime/engines/02/.venv/bin/python" "$target/main.py" probe
 if ($LASTEXITCODE -ne 0) { throw 'Executor probe failed' }

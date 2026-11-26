@@ -195,9 +195,11 @@ class Worker:
     def _poll_experiment(self, task):
         stopped = False
         try:
-            if task["external"].get("executor") != self.executor.identity:
+            recorded = task["external"].get("executor")
+            executor = self.executor.for_identity(recorded) if isinstance(self.executor, Executor02) else self.executor
+            if recorded != executor.identity:
                 raise ValueError("executor identity changed; cannot confirm stop")
-            state = self.executor.cancel(task) if task["execution_status"] == "cancel_requested" else self.executor.status(task)
+            state = executor.cancel(task) if task["execution_status"] == "cancel_requested" else executor.status(task)
             if any(state[k] != expected for k, expected in (("task_id", task["task_id"]), ("project_id", task["project_id"]), ("package_hash", task["external"]["package_hash"]))):
                 raise ValueError("executor status identity mismatch")
             stopped = state["execution_status"] in TERMINAL | {"not_found"} and state.get("process_alive") is False
@@ -210,7 +212,7 @@ class Worker:
             if state["execution_status"] == "not_found":
                 self.finish(task, "interrupted", "pending", {}, error="submission absent; no automatic resubmission")
                 return
-            folder, result = self.executor.collect(task)
+            folder, result = executor.collect(task)
             from workbench.backend.services.experiment_result import verify_record, register_record
             package, checked, _ = verify_record(folder)
             if checked != result or package["package_hash"] != task["external"]["package_hash"] or result["execution_status"] != state["execution_status"]:
@@ -222,7 +224,8 @@ class Worker:
                 usage = budgets.validate(task["input"]["grant_id"], package)
                 if result["validation_status"] == "passed":
                     responses = json.loads((folder / "experiments/responses.json").read_bytes())
-                    usage = budgets.verify_responses(task["input"]["grant_id"], package, responses)
+                    raw = [json.loads(line) for line in (folder / "experiments/raw-responses.jsonl").read_bytes().splitlines()]
+                    usage = budgets.verify_responses(task["input"]["grant_id"], package, responses, raw_responses=raw)
             registration = register_record(folder, self.store.root / "experiments.sqlite")
             self.finish(task, result["execution_status"], result["validation_status"], dict(registration, folder=str(folder),
                         metrics=result["metrics"], usage=usage, package_hash=package["package_hash"],

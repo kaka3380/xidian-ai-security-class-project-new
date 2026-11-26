@@ -30,6 +30,8 @@ xidian-ai-security-class-project/
 
 ## 开始使用
 
+小组联动开发见 [协作与环境配置](CONTRIBUTING.md) 和 [研究工作台](workbench/README.md)。
+
 1. 选择一个项目，阅读其 README 与 COURSE.md，再进入该项目目录执行安装和启动命令。
 2. 四个项目分别创建环境，按各自要求配置模型服务与 API Key。
 3. 先运行小规模示例，记录环境和结果，再修改代码；本次目录整理不代表已完成运行验证。

@@ -8,6 +8,7 @@ import pytest
 
 from executor.protocol import canonical, digest
 from workbench.backend.api.app import create_app
+from workbench.backend.services import injection_report
 from workbench.backend.services.experiment_budget import ExperimentBudgets
 from workbench.backend.services.injection_experiment import request_for
 from workbench.backend.services.injection_report import render_report, verify_report
@@ -85,6 +86,22 @@ def test_export_portable_frozen_report_is_reproducible_and_stays_pending(make_re
     assert len(list((output / "evidence/inputs").iterdir())) == 5
     assert json.loads((output / "review-status.json").read_bytes())["status"] == "pending_human_review"
     assert store.task("p", task["task_id"])["review_status"] == "pending_review"
+
+
+def test_archive_remains_verifiable_after_exporter_update(make_record, tmp_path, monkeypatch):
+    record, _ = make_record()
+    output = tmp_path / "report"
+    render_report(record, output)
+    archived = output / "report-generator.py"
+    old_hash = digest(archived.read_bytes().replace(b"\r\n", b"\n"))
+    replacement = tmp_path / "new-exporter.py"
+    replacement.write_bytes(b"updated exporter")
+    monkeypatch.setattr(injection_report, "__file__", str(replacement))
+    monkeypatch.setattr(injection_report, "LEGACY_GENERATOR_HASHES", {old_hash})
+    assert verify_report(output)["schema_version"] == 1
+    archived.write_bytes(b"unrecognized exporter")
+    with pytest.raises(ValueError, match="unrecognized archived"):
+        verify_report(output)
 
 
 @pytest.mark.parametrize("change", ["percentage", "figure", "answer", "inventory"])

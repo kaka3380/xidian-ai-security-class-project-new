@@ -2,7 +2,7 @@
 
 验收日期：2026-10-21。网页：http://127.0.0.1:3782 。
 
-## 已配置
+## 历史验收配置
 
 - 对话：用户提供的 DeepSeek 连接，默认模型 `deepseek-flash`，已验证真实流式响应。
 - 嵌入：`BAAI/bge-small-zh-v1.5`，512 维，FastEmbed / ONNX Runtime 在本机 CPU 运行。
@@ -29,14 +29,14 @@
 ## 配置和日志
 
 - 运行配置：`data/user/settings/model_catalog.json`。
-- 本地嵌入启用开关：`data/user/settings/local_embeddings.json`，内容为 `{"enabled": true}`。
+- 可选 FastEmbed 服务：`data/user/settings/local_embeddings.json`。设置 `enabled`、`model` 和 `port`，未启用时启动脚本会跳过。旧的仅含 `enabled: true` 配置需补齐模型和端口。
 - 模型缓存：`data/models/fastembed/`；下载完成后嵌入服务按离线方式加载。
 - 网页启动日志：`data/user/runtime/launcher.log`。
 - 嵌入服务日志：`data/user/runtime/local-embeddings-error.log`。
 
-设置页将本地服务显示在兼容 OpenAI 的本地接口类别下。服务实际由 `scripts/local_embeddings.py` 提供，不需要安装 vLLM、LM Studio 或 Ollama。
+用户可以选用独立的嵌入服务。使用 Ollama 时，在 DeepTutor 的嵌入设置里选择 Ollama，填写本机的完整 `/api/embed` 地址和已安装的嵌入模型名称，维度按探测结果填写。工作台要求本机 HTTP 服务。
 
-## 在新的项目环境复现本地嵌入
+## 可选 FastEmbed 示例
 
 以下命令在项目03目录、已有 `.venv` 的情况下执行。使用已有 pip，或把安装命令替换为 `uv pip install --python .venv/Scripts/python.exe -e '.[local-embedding]'`。
 
@@ -44,8 +44,16 @@
 .\.venv\Scripts\python.exe -m pip install -e '.[local-embedding]'
 $env:HF_HOME = Join-Path (Get-Location) 'data/models/huggingface'
 .\.venv\Scripts\python.exe -c "from pathlib import Path; from fastembed import TextEmbedding; TextEmbedding(model_name='BAAI/bge-small-zh-v1.5', cache_dir=str(Path('data/models/fastembed').resolve()), threads=2)"
-'{"enabled":true}' | Set-Content -LiteralPath 'data/user/settings/local_embeddings.json' -Encoding utf8
+```
+
+在本机的 `data/user/settings/local_embeddings.json` 填写选择的模型和空闲端口。上面的模型对应以下示例：
+
+```json
+{"enabled": true, "model": "BAAI/bge-small-zh-v1.5", "port": 8766}
+```
+
+```powershell
 .\scripts\local-embeddings.ps1 -Action Start
 ```
 
-然后在设置 → 嵌入模型添加本地兼容服务：端点为完整的 `/v1/embeddings` 地址，模型名 `BAAI/bge-small-zh-v1.5`，维度 `512`，关闭发送可变维度参数，并应用设置。更换嵌入模型后需按界面提示重建原知识库索引。
+在设置 → 嵌入模型添加本地兼容服务，填入启动脚本打印的完整 `/v1/embeddings` 地址、所选模型名和服务 `/health` 报告的实际维度。关闭发送可变维度参数。更换嵌入模型时新建或重建索引。

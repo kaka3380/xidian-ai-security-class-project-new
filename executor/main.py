@@ -1,7 +1,6 @@
 """Linux-only, stdlib executor. No model clients, shell execution or database access."""
 import argparse
 import contextlib
-import fcntl
 import json
 import os
 from pathlib import Path
@@ -13,10 +12,11 @@ import time
 from datetime import datetime, timezone
 
 from protocol import canonical, confined, digest, file_hash, identifier, snapshot_hash, validate_package
+from host import file_lock, process_identity
 
 ROOT = Path(__file__).resolve().parent.parent
-RUNS = ROOT / "runs"
-EXCHANGE = Path("/mnt/e/work/ai-security-class-project/workbench/exchange")
+RUNS = Path(os.environ.get("WORKBENCH_EXECUTOR_RUNS", ROOT / "runs"))
+EXCHANGE = Path(os.environ.get("WORKBENCH_EXECUTOR_EXCHANGE", ROOT / "workbench/exchange"))
 TERMINAL = {"completed", "failed", "cancelled", "timed_out", "interrupted"}
 
 
@@ -36,11 +36,12 @@ def atomic(path, value):
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(name, path)
-        directory = os.open(path.parent, os.O_RDONLY)
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
+        if os.name != "nt":
+            directory = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
     finally:
         Path(name).unlink(missing_ok=True)
 
@@ -48,20 +49,12 @@ def atomic(path, value):
 @contextlib.contextmanager
 def locked(task):
     RUNS.mkdir(parents=True, exist_ok=True)
-    with (RUNS / (identifier(task) + ".lock")).open("a+") as stream:
-        fcntl.flock(stream, fcntl.LOCK_EX)
-        # Close, never explicit LOCK_UN: a supervisor inherits the same lock.
-        yield stream.fileno()
+    with file_lock(RUNS / (identifier(task) + ".lock")) as lock_fd:
+        yield lock_fd
 
 
 def identity(pid):
-    try:
-        stat = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
-        if stat[0] == "Z":
-            return None
-        return {"pid": pid, "start_ticks": stat[19], "boot_id": Path("/proc/sys/kernel/random/boot_id").read_text().strip()}
-    except (FileNotFoundError, ProcessLookupError):
-        return None
+    return process_identity(pid)
 
 
 def alive(state):
@@ -263,6 +256,8 @@ def main():
                 import container_tasks
                 result = getattr(container_tasks, args.operation)(args.task, args.project)
             else:
+                if os.name == "nt":
+                    raise ValueError("schema-1 mock supervisor requires Linux")
                 result = globals()[args.operation](args.task, args.project)
         print(canonical(result).decode())
     except (ValueError, KeyError, OSError, TypeError) as error:

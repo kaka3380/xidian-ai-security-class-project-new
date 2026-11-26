@@ -4,9 +4,9 @@
 
 ## 批准内容
 
-ResearchPackage v2 的批准字段保持兼容。方案哈希冻结批准资料清单、数据集 ID/版本/哈希、问题、方法、baseline、指标、单次运行、源码快照、镜像和全部 config。`config.experiment` 显式启用 `prompt_injection_v1`；未知字段和不能映射的参数直接拒绝。当前只允许已验收的 02 镜像，由执行器固定白名单检查，不能用任意镜像冒充。
+ResearchPackage v2 的批准字段保持兼容。方案哈希冻结批准资料清单、数据集 ID/版本/哈希、问题、方法、baseline、指标、单次运行、源码快照、镜像和全部 config。`config.experiment` 显式启用 `prompt_injection_v1`，未知字段和不能映射的参数直接拒绝。新部署由操作者用 `WORKBENCH_SCIENTIST02_IMAGE` 显式授权一个本地镜像摘要，执行时仍与批准方案核对。
 
-`GET /api/workbench/experiment-contract` 返回当前源码哈希、所需指标和 profile。源码变更必须更新并重新批准方案。部署先运行 `deploy/linux/install-executor.ps1`，使 WSL 的执行代码与批准的源码哈希一致；不要在有活动任务时覆盖部署。每次任务另存批准源码字节到只读的 `runtime/`，容器执行该副本，结果带回同一代码供复核。
+`GET /api/workbench/experiment-contract` 返回当前源码哈希、所需指标和 profile。源码变更必须更新并重新批准方案。默认 Docker 后端使用当前仓库的执行代码。使用旧 WSL 后端时按部署说明同步执行器，并先确认在途任务停止。每次任务另存批准源码字节到只读的 `runtime/`，容器执行该副本，结果带回同一代码供复核。
 
 冻结分析配置示例：
 
@@ -29,7 +29,19 @@ ResearchPackage v2 的批准字段保持兼容。方案哈希冻结批准资料�
 }
 ```
 
-重新生成使用 `mode=regenerate`、`response_sha256=null`、正数预算和请求上限；上限至少覆盖本次全部样本。当前模型映射只支持现有网关明确实现的 `deepseek-flash → deepseek-flash`，不隐式套用其他别名；供应商实际返回模型若不同会核验失败。`seeds=[0]` 仅表示本 profile 的单次运行，不向不支持 seed 的供应商宣称 RNG 可复现，也不支持 seed 聚合。任务不会执行 02 搜索树、自动改方案或生成判定代码。
+重新生成使用 `mode=regenerate`、`response_sha256=null`、正数预算和请求上限，上限至少覆盖本次全部样本。`target_model`、`provider_model` 与供应商返回的模型名须一致。新供应商使用下述显式配置，旧方案保留原 DeepSeek 映射。冻结分析可用任一有出处的模型标识，重算时不会连接供应商。`seeds=[0]` 仅表示本 profile 的单次运行，不声明供应商 RNG 可复现。任务不会执行 02 搜索树、自动改方案或生成判定代码。
+
+### 用户自定义在线供应商
+
+在 Git 忽略的本机目录（例如 `workbench/data/`）保存供应商 JSON。以下仅为结构示例，端点、模型名与费率由操作者填写：
+
+```json
+{"endpoint":"https://provider.example/v1/chat/completions","model":"text-model-version","input_cny_per_million":3,"output_cny_per_million":9}
+```
+
+适用于接受 OpenAI 风格文本请求、遵守输出 token 上限并返回对应模型名的服务。费率填写保守的峰值，每百万 token 的人民币费率向上取整。地址使用 HTTPS 或本机 HTTP，禁止在 URL 中携带凭据。密钥单独保存在本机文件，网关不会跟随重定向。
+
+生成待审方案和启动正式验收时都可通过 `--provider-profile` 指定同一份供应商 JSON。生成时四个字段会写入 `config.experiment.provider` 并纳入方案哈希。执行时网关须与已批准的配置完全一致，端点、模型或费率变化均需重新批准。自定义供应商只能走逐样本授权的实验接口，普通转发入口保持关闭。
 
 `metrics` 必须按顺序为 `attack_success_rate`、`clean_task_accuracy`、`valid_response_rate`。数据和回答使用 `executor.protocol.canonical`（UTF-8、键排序、无多余空白、不允许 NaN）计算 SHA-256；不能用带缩进文件的字节哈希替代。数据集哈希写入方案的 `dataset_hash`。
 

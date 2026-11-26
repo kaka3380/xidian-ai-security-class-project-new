@@ -83,6 +83,7 @@ class ExecConfig:
 @dataclass
 class ExperimentConfig:
     num_syn_datasets: int
+    fixed_local_data: bool = False
 
 
 @dataclass

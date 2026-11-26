@@ -24,6 +24,14 @@ from workbench.backend.services.experiment_result import verify_record
 
 
 class InjectionExecutorTests(unittest.TestCase):
+    def test_stop_targets_verified_container_id(self):
+        running = {"Id": "owned-container-id", "State": {"Running": True}}
+        stopped = {"Id": "owned-container-id", "State": {"Running": False}}
+        with patch.object(executor, "inspect_owned", side_effect=[running, stopped]), patch.object(executor, "docker") as docker:
+            docker.return_value.returncode = 0
+            executor.stop_owned(self.package)
+        docker.assert_called_once_with("stop", "--time", "5", "owned-container-id")
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)

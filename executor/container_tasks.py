@@ -1,7 +1,8 @@
 """Supervised scientist02 container tasks, sharing the executor's task store."""
+from contextlib import ExitStack
 import json
-import fcntl
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -12,6 +13,7 @@ import time
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import main as state_io
 from protocol import canonical, confined, digest, file_hash, identifier
+from host import file_lock
 from workbench.backend.services.research_package import validate_frozen_package
 from workbench.adapters.scientist02 import prepare_inputs
 
@@ -20,7 +22,23 @@ REPAIRED_IMAGE = "sha256:d7fd0f11cbf9b7d7de9a398de76ba55b71c5e81ff70c763361731ec
 
 
 def docker(*args, env=None, timeout=30):
-    return subprocess.run(["docker", *args], capture_output=True, text=True, timeout=timeout, env=env)
+    endpoint = os.environ.get("WORKBENCH_DOCKER_ENDPOINT")
+    command = ["docker"]
+    options = dict(capture_output=True, encoding="utf-8", errors="replace", timeout=timeout, env=env)
+    if endpoint:
+        command.extend(["--host", endpoint])
+        options["env"] = {key: value for key, value in (os.environ if env is None else env).items() if key not in {"DOCKER_CONTEXT", "DOCKER_HOST"}}
+        identity = subprocess.run([*command, "info", "--format", "{{.ID}}"], **options)
+        if identity.returncode or identity.stdout.strip() != os.environ.get("WORKBENCH_DOCKER_DAEMON_ID"):
+            raise ValueError("Docker daemon changed or is unavailable; container stop cannot be confirmed")
+    return subprocess.run([*command, *args], **options)
+
+
+def gateway_origin(port):
+    host = os.environ.get("WORKBENCH_DOCKER_GATEWAY_HOST", "host.docker.internal")
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.\-]{0,252}", host) or type(port) is not int or not 1 <= port <= 65535:
+        raise ValueError("invalid container-side gateway hostname or port")
+    return f"http://{host}:{port}"
 
 
 def inspect_owned(package):
@@ -39,8 +57,9 @@ def inspect_owned(package):
 def stop_owned(package):
     info = inspect_owned(package)
     if info and info["State"]["Running"]:
-        stopped = docker("stop", "--time", "5", "research-" + package["task_id"])
-        if stopped.returncode or inspect_owned(package)["State"]["Running"]:
+        stopped = docker("stop", "--time", "5", info["Id"])
+        after = inspect_owned(package)
+        if stopped.returncode or (after and after["State"]["Running"]):
             raise ValueError("task container stop could not be confirmed")
 
 
@@ -49,7 +68,9 @@ def validate_source(folder, task, project):
     plan = state_io.read(confined(folder, "approved-plan.json"))
     documents_path = folder / "approved-documents.json"
     documents = state_io.read(documents_path) if documents_path.exists() else [state_io.read(confined(folder, "approved-document.json"))]
-    if package["task_id"] != task or package["project_id"] != project or package["engine"] != "scientist02" or package["image"] not in {IMAGE, REPAIRED_IMAGE}:
+    configured_image = os.environ.get("WORKBENCH_SCIENTIST02_IMAGE")
+    images = {IMAGE, REPAIRED_IMAGE, configured_image} if configured_image else {IMAGE, REPAIRED_IMAGE}
+    if package["task_id"] != task or package["project_id"] != project or package["engine"] != "scientist02" or package["image"] not in images:
         raise ValueError("unsupported task identity, engine or image")
     files = {doc["path"]: confined(folder, doc["path"]).read_bytes() for doc in package["documents"]}
     validate_frozen_package(package, files, documents=documents, plan=plan)
@@ -197,36 +218,72 @@ def submit(task, project):
         finally:
             if stage.exists():
                 shutil.rmtree(stage)
-        child = subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "_supervise", task, project, str(lock_fd)], pass_fds=(lock_fd,), start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, cwd=folder)
+        if os.name == "nt":
+            options = {"creationflags": subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP}
+            child_lock = -1
+        else:
+            options = {"pass_fds": (lock_fd,), "start_new_session": True}
+            child_lock = lock_fd
+        child = subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "_supervise", task, project, str(child_lock)],
+                                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, cwd=folder, **options)
+        if os.name == "nt":
+            state["process"] = state_io.identity(child.pid)
+            state_io.atomic(folder / "state.json", state)
+            return state
         return dict(state, process=state_io.identity(child.pid))
 
 
 def supervise(task, project, lock_fd):
     folder = state_io.owned(task, project)
-    state = state_io.read(folder / "state.json")
-    state.update(process=state_io.identity(os.getpid()), execution_status="running", started_at=state_io.now())
-    state_io.atomic(folder / "state.json", state)
-    os.close(lock_fd)
+    def begin():
+        state = state_io.read(folder / "state.json")
+        process = state_io.identity(os.getpid())
+        if state["execution_status"] != "accepted" or (os.name == "nt" and state["process"] is None):
+            return None
+        state.update(process=process, execution_status="running", started_at=state_io.now())
+        state_io.atomic(folder / "state.json", state)
+        return state
+
+    if os.name == "nt":
+        with state_io.locked(task):
+            state = begin()
+    else:
+        try:
+            state = begin()
+        finally:
+            os.close(lock_fd)
+    if state is None:
+        return
     package = state_io.read(folder / "research_package.json")
-    heavy = None
+    with ExitStack() as locks:
+        try:
+            lock = state_io.RUNS / ".heavy-experiment.lock" if os.environ.get("WORKBENCH_EXECUTOR_RUNS") else state_io.ROOT / "heavy-experiment.lock"
+            locks.enter_context(file_lock(lock, blocking=False))
+        except OSError as error:
+            with state_io.locked(task):
+                finish(folder, state, "failed", "container supervisor lock unavailable: " + str(error))
+            return
+        _run_container(folder, state, package, task)
+
+
+def _run_container(folder, state, package, task):
     try:
-        heavy = (state_io.ROOT / "heavy-experiment.lock").open("a+")
-        fcntl.flock(heavy, fcntl.LOCK_EX | fcntl.LOCK_NB)
         metadata = state_io.read(folder / "adapter.json")
         injection = "experiment" in package["config"]
         if injection:
             env = dict(os.environ)
             if package["config"]["experiment"]["mode"] == "regenerate":
                 gateway = state_io.read(folder / "gateway-access.json")
-                if type(gateway.get("port")) is not int or not 1 <= gateway["port"] <= 65535:
-                    raise ValueError("invalid scoped gateway port")
                 env.update(EXPERIMENT_TOKEN=gateway["token"], EXPERIMENT_GRANT=gateway["grant_id"],
-                           EXPERIMENT_GATEWAY_URL=f"http://host.docker.internal:{gateway['port']}/v1/experiment/chat/completions")
+                           EXPERIMENT_GATEWAY_URL=gateway_origin(gateway["port"]) + "/v1/experiment/chat/completions")
         else:
-            gateway = state_io.read(Path("/mnt/e/work/ai-security-class-project/workbench/data/model-session/gateway.json"))
-            env = dict(os.environ, OPENAI_API_KEY=gateway["token"], OPENAI_BASE_URL=f"http://host.docker.internal:{gateway['port']}/v1")
+            gateway = state_io.read(state_io.EXCHANGE.parent / "data/model-session/gateway.json")
+            env = dict(os.environ, OPENAI_API_KEY=gateway["token"], OPENAI_BASE_URL=gateway_origin(gateway["port"]) + "/v1")
         (folder / "experiments").mkdir(exist_ok=True)
-        args = ["create", "--name", "research-" + task, "--gpus", "all", "--user", "1000:1000", "--cpus", "4", "--memory", "4g", "--memory-swap", "4g", "--pids-limit", "256", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--read-only", "--tmpfs", "/tmp:rw,nosuid,nodev,size=512m", "--restart", "no", "--workdir", "/task", "--env", "OPENAI_API_KEY", "--env", "OPENAI_BASE_URL", "--env", "MPLCONFIGDIR=/tmp/matplotlib", "--env", "NUMBA_CACHE_DIR=/tmp/numba", "--env", "OMP_NUM_THREADS=1", "--env", "HF_HUB_OFFLINE=1", "--mount", f"type=bind,src={folder},dst=/task,readonly", "--mount", f"type=bind,src={folder / 'experiments'},dst=/task/experiments"]
+        args = ["create", "--pull", "never", "--name", "research-" + task, "--user", "1000:1000", "--cpus", "4", "--memory", "4g", "--memory-swap", "4g", "--pids-limit", "256", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--read-only", "--tmpfs", "/tmp:rw,nosuid,nodev,size=512m", "--restart", "no", "--workdir", "/task", "--env", "OPENAI_API_KEY", "--env", "OPENAI_BASE_URL", "--env", "MPLCONFIGDIR=/tmp/matplotlib", "--env", "NUMBA_CACHE_DIR=/tmp/numba", "--env", "OMP_NUM_THREADS=1", "--env", "HF_HUB_OFFLINE=1", "--mount", f"type=bind,src={folder},dst=/task,readonly", "--mount", f"type=bind,src={folder / 'experiments'},dst=/task/experiments"]
+        gpu = os.environ.get("WORKBENCH_DOCKER_GPUS", "" if injection else "all")
+        if gpu:
+            args.extend(["--gpus", gpu])
         if injection:
             # Never inherit a host provider credential into a benchmark container.
             for variable in ("OPENAI_API_KEY", "OPENAI_BASE_URL"):
@@ -272,9 +329,6 @@ def supervise(task, project, lock_fd):
         with state_io.locked(task):
             stop_owned(package)
             finish(folder, state, "failed", str(error))
-    finally:
-        if heavy is not None:
-            heavy.close()
 
 
 def status(task, project):

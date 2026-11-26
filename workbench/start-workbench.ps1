@@ -1,9 +1,10 @@
 #Requires -Version 7.0
 [CmdletBinding()]
-param([switch]$Foreground, [int]$Port = 8090)
+param([switch]$Foreground, [ValidateRange(1, 65535)][int]$Port = 8090, [string]$Python)
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot
-$python = Join-Path $repo 'projects\project-04-Intelligence Gathering\.venv\Scripts\python.exe'
+if (-not $Python) { $Python = Join-Path $repo 'projects\project-04-Intelligence Gathering\.venv\Scripts\python.exe' }
+$Python = [IO.Path]::GetFullPath($Python)
 $data = Join-Path $PSScriptRoot 'data'
 New-Item -ItemType Directory -Path $data -Force | Out-Null
 if (-not (Test-Path -LiteralPath $python)) { throw 'Use the existing project04 environment; Python not found.' }

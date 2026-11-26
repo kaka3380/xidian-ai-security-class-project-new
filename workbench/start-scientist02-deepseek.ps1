@@ -12,11 +12,17 @@ param(
     [string]$KeyFile,
     [string]$IdeasFile,
     [string]$OutputDirectory,
+    [string]$Image = $env:WORKBENCH_SCIENTIST02_IMAGE,
+    [string]$GatewayHost = $env:WORKBENCH_DOCKER_GATEWAY_HOST,
     [switch]$Run
 )
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot
-$image = 'research/scientist02:m0-20261024'
+if (-not $Image) { throw 'Provide a local Scientist02 image using -Image or WORKBENCH_SCIENTIST02_IMAGE.' }
+if (-not $GatewayHost) { $GatewayHost = 'host.docker.internal' }
+if ($GatewayHost -notmatch '^[a-zA-Z0-9][a-zA-Z0-9.-]{0,252}$') { throw 'GatewayHost must be a hostname or IPv4 address.' }
+$imageId = docker image inspect --format '{{.Id}}' -- $Image
+if ($LASTEXITCODE -ne 0 -or $imageId -cnotmatch '^sha256:[0-9a-f]{64}$') { throw 'Local Scientist02 image could not be resolved to one pinned ID.' }
 $alias = 'gpt-4o-2024-11-20' # Local compatibility name; the gateway sends deepseek-flash upstream.
 $python = Join-Path $repo 'projects\project-04-Intelligence Gathering\.venv\Scripts\python.exe'
 if ($IdeasFile) {
@@ -35,8 +41,6 @@ if ($Run) {
     }
     $keyPath = (Resolve-Path -LiteralPath $KeyFile).Path
     if (-not (Test-Path -LiteralPath $python)) { throw 'The existing project04 Python environment was not found.' }
-    docker image inspect $image --format '{{.Id}}' | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw 'Start Docker Desktop and confirm that the Scientist02 image exists.' }
 }
 if (-not $OutputDirectory) {
     $OutputDirectory = Join-Path $repo ('outputs\scientist02-deepseek\' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + [guid]::NewGuid().ToString('N').Substring(0, 6))
@@ -53,6 +57,8 @@ import yaml
 root = Path(sys.argv[1])
 cfg = yaml.safe_load(sys.stdin.read())
 alias = 'gpt-4o-2024-11-20'
+if sys.argv[2] == 'fixed-local':
+    cfg['experiment']['fixed_local_data'] = True
 cfg['agent']['num_workers'] = 1
 cfg['agent']['steps'] = 1
 cfg['agent']['stages'] = {f'stage{i}_max_iters': n for i, n in enumerate((2, 2, 1, 1), 1)}
@@ -71,17 +77,28 @@ idea = {
     'Short Hypothesis': 'Mild L2 regularization may improve held-out accuracy of a tiny MLP on noisy synthetic data.',
     'Related Work': 'An environment and workflow demonstration; no novelty or literature claims.',
     'Abstract': 'Compare weight decay 0, 0.001 and 0.01 on a fixed, locally generated binary classification dataset using the same small MLP and data splits.',
-    'Experiments': 'Use only installed numpy, torch and matplotlib. Generate 512 samples with 8 features and noisy linear labels at seed 42. Fix train/validation/test splits at 60/20/20 percent. Use one hidden layer of width 16, batch size 32, at most 10 epochs and one seed. Compare all weight decay values with identical architecture and initialization. Save test accuracy, validation loss, settings, and plots. All stages must reuse these synthetic data; do not download HuggingFace datasets, pretrained models, or other network resources. Do not pip install packages. Keep experiments within 6GB VRAM.',
+    'Experiments': (
+        'Use only installed numpy, torch and matplotlib. Generate 512 samples with 8 features and noisy linear labels at seed 42. '
+        'Fix train/validation/test splits at 60/20/20 percent. Use one hidden layer of width 16, batch size 32, at most 10 epochs and one seed. '
+        'Compare all weight decay values with identical architecture, initialization, and shared training controls. '
+        'Before training any group, generate an epoch-by-epoch sequence of training indices with a dedicated random generator seeded at 42. '
+        'Reuse exactly that sequence in every group without independent shuffling. Save the split indices and per-epoch training indices '
+        'alongside test accuracy, validation loss, settings, and plots so that sample order can be checked. '
+        'All stages must reuse these synthetic data; do not download HuggingFace datasets, pretrained models, or other network resources. '
+        'Do not pip install packages. Keep experiments within 6GB VRAM.'
+    ),
     'Risk Factors and Limitations': 'A small synthetic smoke experiment, not evidence of scientific novelty or real-world effectiveness. Stop and report missing results rather than invent them.'
 }
 (root / 'ideas.json').write_text(json.dumps([idea], indent=2), encoding='utf-8')
 '@
+$prepareMode = if ($IdeasFile) { 'custom' } else { 'fixed-local' }
 $config | docker run --rm -i --pull never --network none --read-only --tmpfs /tmp:rw,size=64m `
     --cap-drop ALL --security-opt no-new-privileges --memory 256m --cpus 1 `
-    --mount "type=bind,source=$folder,target=/prepare" --entrypoint python $image -c $prepareCode /prepare
+    --mount "type=bind,source=$folder,target=/prepare" --entrypoint python $imageId -c $prepareCode /prepare $prepareMode
 if ($LASTEXITCODE -ne 0) { throw 'Could not prepare the isolated configuration; inspect the Docker output above.' }
 if ($IdeasFile) { Copy-Item -LiteralPath $ideasPath -Destination (Join-Path $folder 'ideas.json') }
 Write-Output "Prepared: $folder"
+Write-Output "Pinned image: $imageId"
 Write-Output 'Input: ideas.json; configuration: bfts_config.yaml; experiment stages: 2/2/1/1; paper writing and review: skipped.'
 if (-not $Run) {
     Write-Output 'Preparation only. No model API calls were made. Use -KeyFile <local-path> -Run to execute the example, or add -IdeasFile <edited-ideas.json> to use your own topic.'
@@ -110,7 +127,7 @@ try {
     }
     $settings = Get-Content -LiteralPath $pointer -Raw | ConvertFrom-Json
     $env:OPENAI_API_KEY = $settings.token
-    $env:OPENAI_BASE_URL = "http://host.docker.internal:$port/v1"
+    $env:OPENAI_BASE_URL = "http://${GatewayHost}:$port/v1"
     $connectionProbe = @'
 import json, os, urllib.request
 req = urllib.request.Request(os.environ['OPENAI_BASE_URL'] + '/models', headers={'Authorization': 'Bearer ' + os.environ['OPENAI_API_KEY']})
@@ -119,14 +136,14 @@ with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(req, time
 assert any(m['id'] == 'deepseek-flash' for m in models['data'])
 print('Container-to-gateway connection verified; model requests have not started yet.')
 '@
-    docker run --rm --pull never --env OPENAI_API_KEY --env OPENAI_BASE_URL --entrypoint python $image -c $connectionProbe
+    docker run --rm --pull never --env OPENAI_API_KEY --env OPENAI_BASE_URL --entrypoint python $imageId -c $connectionProbe
     if ($LASTEXITCODE -ne 0) { throw 'The container cannot reach the local gateway. No experiment was started.' }
     Write-Output 'Starting paid DeepSeek experiment through the existing gateway budget guard. Output: experiment.log and experiments/.'
     docker run --rm --pull never --gpus all --read-only --tmpfs /tmp:rw,size=256m `
         --cap-drop ALL --security-opt no-new-privileges --memory 3g --cpus 2 `
-        --env OPENAI_API_KEY --env OPENAI_BASE_URL --env NO_PROXY=host.docker.internal,127.0.0.1,localhost `
+        --env OPENAI_API_KEY --env OPENAI_BASE_URL --env "NO_PROXY=$GatewayHost,127.0.0.1,localhost" `
         --env MPLCONFIGDIR=/tmp/matplotlib-config --env XDG_CACHE_HOME=/tmp/xdg-cache `
-        --workdir /task --mount "type=bind,source=$folder,target=/task" --entrypoint python $image `
+        --workdir /task --mount "type=bind,source=$folder,target=/task" --entrypoint python $imageId `
         /opt/scientist02/launch_scientist_bfts.py --load_ideas /task/ideas.json --idea_idx 0 `
         --skip_writeup --skip_review --model_agg_plots $alias 2>&1 | Tee-Object -FilePath (Join-Path $folder 'experiment.log')
     if ($LASTEXITCODE -ne 0) { throw "Experiment failed. Inspect $folder\experiment.log; no automatic retry was made." }

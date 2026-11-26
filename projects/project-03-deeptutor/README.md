@@ -18,7 +18,7 @@ DeepTutor 提供网页与命令行学习助手，支持对话、知识库、学�
 
 网页默认地址为 **http://127.0.0.1:3782**；实际端口以启动日志为准。脚本默认后台启动，关闭终端后可继续使用。需要源码热更新时使用 `start-local.ps1 -Dev`，需要前台查看日志时加 `-Foreground`。
 
-脚本始终将当前项目设为运行主目录，配置保存在 `data/user/settings/`；后台日志位于 `data/user/runtime/launcher.log`。本机对话模型已配置为 `deepseek-flash`，本地中文嵌入模型为 `BAAI/bge-small-zh-v1.5`（CPU、512 维）。启停脚本会同时管理本地嵌入服务。模型缓存、密钥和知识库均保存在已忽略的 `data/` 下。
+脚本始终将当前项目设为运行主目录，配置保存在 `data/user/settings/`，后台日志位于 `data/user/runtime/launcher.log`。对话与嵌入模型由用户在设置中选择。只有本地配置显式启用 FastEmbed 时，启停脚本才会管理该辅助服务。模型缓存、密钥和知识库均保存在已忽略的 `data/` 下。
 
 2026-10-21 本机验证：Python 3.12.14、Node.js 24.18.0、npm 11.16.0；网页生产构建、运行诊断、在线模型探测、真实中文对话及附件问答通过。已创建三文档验收知识库 `03-local-acceptance`，完成本地向量入库、检索和引用问答，正确回答海岚计划的验收码、测试集数量和负责人。复现与使用方法见[本机模型及知识库说明](docs-for-user/local-windows.md)。
 

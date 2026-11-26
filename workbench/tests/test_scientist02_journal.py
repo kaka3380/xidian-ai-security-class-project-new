@@ -98,6 +98,7 @@ def test_frozen_input_detects_changes(inputs, defect):
         read_journal_inputs(inputs, manifest)
 
 
+@pytest.mark.skipif(not HISTORICAL.is_dir(), reason="requires separately archived historical journals")
 def test_historical_journals_replay_without_model_dependencies():
     manifest = freeze_journal_inputs(HISTORICAL)
     stages = journal_evidence(read_journal_inputs(HISTORICAL, manifest))

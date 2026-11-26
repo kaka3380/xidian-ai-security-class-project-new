@@ -87,12 +87,15 @@ def main():
     client.invoke("submit", name, "offline-demo")
     state = client.invoke("status", name, "offline-demo")
     assert state["process_alive"]
+    settings = client.wsl_settings()
+    distribution, _, runtime, _ = settings
     if args.restart_wsl:
-        subprocess.run(["wsl.exe", "--terminate", "Ubuntu-24.04"], check=True, capture_output=True, timeout=30)
-        checks["restart_kind"] = "actual Ubuntu-24.04 termination and restart"
+        subprocess.run(["wsl.exe", "--terminate", distribution], check=True, capture_output=True, timeout=30)
+        checks["restart_kind"] = "configured WSL distribution termination and restart"
     else:
-        code = "import json,os,signal,sys;sys.path.insert(0,'/home/research/research-runtime/executor');from main import identity;p=json.loads(sys.argv[1]);assert identity(p['pid'])==p;os.kill(p['pid'],signal.SIGKILL)"
-        subprocess.run(["wsl.exe", "-d", "Ubuntu-24.04", "-u", "research", "--exec", client.LINUX_PYTHON, "-c", code, json.dumps(state["process"])], check=True, capture_output=True, timeout=30)
+        code = "import json,os,signal,sys;sys.path.insert(0,sys.argv[1]);from main import identity;p=json.loads(sys.argv[2]);assert identity(p['pid'])==p;os.kill(p['pid'],signal.SIGKILL)"
+        subprocess.run([*client.wsl_prefix(settings), f"{runtime}/engines/02/.venv/bin/python", "-c", code,
+                        f"{runtime}/executor", json.dumps(state["process"])], check=True, capture_output=True, timeout=30)
         checks["restart_kind"] = "supervisor crash and fresh executor process"
     state = wait(name)
     assert state["execution_status"] == "interrupted"

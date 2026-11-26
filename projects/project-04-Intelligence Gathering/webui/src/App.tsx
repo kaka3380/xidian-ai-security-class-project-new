@@ -42,7 +42,7 @@ function App() {
         <NavItem icon={BookOpen} label="知识库" active={view === 'knowledge'} onClick={() => setView('knowledge')} />
         <NavItem icon={GraduationCap} label="学习问答" active={view === 'learning'} onClick={() => setView('learning')} />
         <NavItem icon={FlaskConical} label="科研自动化" active={view === 'scientist'} onClick={() => setView('scientist')} />
-        <NavItem icon={LayoutDashboard} label="研究工作台" onClick={() => window.location.assign('http://127.0.0.1:8090/workbench')} />
+        <NavItem icon={LayoutDashboard} label="研究工作台" onClick={() => window.location.assign('/workbench')} />
       </nav>
       <div className="flex-1" />
       <button type="button" onClick={() => setShowDisclaimer(true)} className="text-left px-3 py-2 text-xs text-zinc-500 hover:text-zinc-300">使用说明与许可</button>

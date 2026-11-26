@@ -15,14 +15,19 @@ import time
 import urllib.error
 import urllib.request
 
+from workbench.backend.services.injection_experiment import validate_provider
+
 MODEL = "deepseek-flash"
 INPUT_CNY_PER_MILLION = 2
 OUTPUT_CNY_PER_MILLION = 8
 LIMIT_MICRO_CNY = 5_000_000
 
 
-def prepare_request(body):
-    if body.get("model") not in {MODEL, "gpt-4o-2024-11-20"} or body.get("stream") or body.get("n", 1) != 1:
+def prepare_request(body, *, provider=None):
+    if provider is not None:
+        validate_provider(provider)
+    models = {provider["model"]} if provider else {MODEL, "gpt-4o-2024-11-20"}
+    if body.get("model") not in models or body.get("stream") or body.get("n", 1) != 1:
         raise ValueError("model/stream/count not authorized")
     permitted = {"model", "messages", "temperature", "max_tokens", "max_completion_tokens", "tools", "tool_choice", "response_format", "stop", "top_p", "frequency_penalty", "presence_penalty", "seed", "n", "stream"}
     if set(body) - permitted:
@@ -30,6 +35,8 @@ def prepare_request(body):
     messages = body.get("messages")
     if not isinstance(messages, list) or not messages:
         raise ValueError("messages required")
+    if provider and any(not isinstance(message, dict) or not isinstance(message.get("content"), str) for message in messages):
+        raise ValueError("configured provider profiles accept text only")
     max_tokens = body.get("max_tokens") or body.get("max_completion_tokens") or 4096
     if type(max_tokens) is not int or not 1 <= max_tokens <= 16384:
         raise ValueError("output limit must be 1..16384")
@@ -49,8 +56,12 @@ def prepare_request(body):
                 if part.get("type") == "image_url":
                     part["image_url"]["url"] = "inline-image"
                     image_tokens += 1024
-    reservation = (len(json.dumps(billing_view, ensure_ascii=False).encode()) + image_tokens + 4096 * len(messages) + 8192) * INPUT_CNY_PER_MILLION + max_tokens * OUTPUT_CNY_PER_MILLION
-    request = dict(body, model=MODEL, max_tokens=max_tokens, thinking={"type": "disabled"})
+    input_rate, output_rate = ((provider["input_cny_per_million"], provider["output_cny_per_million"])
+                               if provider else (INPUT_CNY_PER_MILLION, OUTPUT_CNY_PER_MILLION))
+    reservation = (len(json.dumps(billing_view, ensure_ascii=False).encode()) + image_tokens + 4096 * len(messages) + 8192) * input_rate + max_tokens * output_rate
+    request = dict(body, model=provider["model"] if provider else MODEL, max_tokens=max_tokens)
+    if provider is None:
+        request["thinking"] = {"type": "disabled"}
     request.pop("max_completion_tokens", None)
     request.pop("seed", None)
     request.pop("n", None)
@@ -94,12 +105,31 @@ class Ledger:
         return {"budget_cny": 5, "reserved_upper_bound_cny": sum(r[1] for r in rows) / 1e6, "model": MODEL, "model_requests": len(rows), "requests": [{"id": r[0], "reserved_cny": r[1] / 1e6, "status": r[2], "usage": json.loads(r[3]) if r[3] else None} for r in rows]}
 
 
-def serve(key_file, runtime, host="127.0.0.1", port=18765, workbench_data=None):
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def serve(key_file, runtime, host="127.0.0.1", port=18765, workbench_data=None, provider=None):
+    if provider is not None:
+        validate_provider(provider)
+        if workbench_data is None:
+            raise ValueError("configured provider requires a plan-scoped workbench data directory")
     runtime.mkdir(parents=True, exist_ok=True)
-    loader = importlib.util.spec_from_file_location("key_loader", Path(__file__).resolve().parents[3] / "deploy/linux/probe-deepseek.py")
-    module = importlib.util.module_from_spec(loader)
-    loader.loader.exec_module(module)
-    key = module.load_key(key_file)
+    if provider is None:
+        loader = importlib.util.spec_from_file_location("key_loader", Path(__file__).resolve().parents[3] / "deploy/linux/probe-deepseek.py")
+        module = importlib.util.module_from_spec(loader)
+        loader.loader.exec_module(module)
+        key = module.load_key(key_file)
+    else:
+        key = Path(key_file).read_text(encoding="utf-8-sig").strip()
+        if not 1 <= len(key) <= 4096 or any(ord(character) < 33 or ord(character) > 126 for character in key):
+            raise ValueError("credential file must contain one bearer token")
+    endpoint = provider["endpoint"] if provider else "https://api.deepseek.com/chat/completions"
+    handlers = [NoRedirect()]
+    if endpoint.startswith("http://"):
+        handlers.append(urllib.request.ProxyHandler({}))
+    upstream_client = urllib.request.build_opener(*handlers)
     settings_path = runtime / "gateway.json"
     token = json.loads(settings_path.read_text())["token"] if settings_path.exists() else secrets.token_urlsafe(32)
     ledger = Ledger(runtime / "budget.sqlite")
@@ -125,12 +155,14 @@ def serve(key_file, runtime, host="127.0.0.1", port=18765, workbench_data=None):
             if self.path == "/budget":
                 return self.reply(200, ledger.summary())
             if self.path in {"/models", "/v1/models"}:
-                return self.reply(200, {"object": "list", "data": [{"id": MODEL, "object": "model"}]})
+                return self.reply(200, {"object": "list", "data": [{"id": provider["model"] if provider else MODEL, "object": "model"}]})
             self.reply(404, {"error": "unsupported path"})
 
         def do_POST(self):
             if self.path == "/v1/experiment/chat/completions" and workbench_data is not None:
                 return self.experiment_request()
+            if provider is not None:
+                return self.reply(404, {"error": "configured provider requires a scoped experiment request"})
             if not self.authorized():
                 return self.reply(401, {"error": "unauthorized"})
             if self.path not in {"/chat/completions", "/v1/chat/completions"}:
@@ -146,8 +178,8 @@ def serve(key_file, runtime, host="127.0.0.1", port=18765, workbench_data=None):
                     log.write(json.dumps({"time": time.time(), "reason": str(error)}) + "\n")
                 return self.reply(402, {"error": {"message": "request rejected by schema or 5 CNY budget guard", "type": "budget_guard"}})
             try:
-                upstream = urllib.request.Request("https://api.deepseek.com/chat/completions", data=json.dumps(request).encode(), headers={"Authorization": "Bearer " + key, "Content-Type": "application/json"})
-                with urllib.request.urlopen(upstream, timeout=180) as response:
+                upstream = urllib.request.Request(endpoint, data=json.dumps(request).encode(), headers={"Authorization": "Bearer " + key, "Content-Type": "application/json"})
+                with upstream_client.open(upstream, timeout=180) as response:
                     data = json.load(response)
                 ledger.finish(row, "completed", data.get("usage"))
                 self.reply(200, data)
@@ -169,12 +201,12 @@ def serve(key_file, runtime, host="127.0.0.1", port=18765, workbench_data=None):
                     raise ValueError("invalid request size")
                 body = json.loads(self.rfile.read(size))
                 call_id, request = budgets.reserve(self.headers.get("X-Experiment-Grant"), self.headers.get("X-Experiment-Task"),
-                    self.headers.get("X-Experiment-Sample"), body, self.headers.get("Authorization", "").removeprefix("Bearer "))
+                    self.headers.get("X-Experiment-Sample"), body, self.headers.get("Authorization", "").removeprefix("Bearer "), provider=provider)
             except (ValueError, TypeError, KeyError):
                 return self.reply(402, {"error": "experiment contract or budget rejected"})
             try:
-                upstream = urllib.request.Request("https://api.deepseek.com/chat/completions", data=json.dumps(request).encode(), headers={"Authorization": "Bearer " + key, "Content-Type": "application/json"})
-                with urllib.request.urlopen(upstream, timeout=180) as response:
+                upstream = urllib.request.Request(endpoint, data=json.dumps(request).encode(), headers={"Authorization": "Bearer " + key, "Content-Type": "application/json"})
+                with upstream_client.open(upstream, timeout=180) as response:
                     data = json.load(response)
                 budgets.finish(call_id, data)
                 self.reply(200, dict(data, workbench_request_id=call_id))
@@ -185,7 +217,8 @@ def serve(key_file, runtime, host="127.0.0.1", port=18765, workbench_data=None):
     server = ThreadingHTTPServer((host, port), Handler)
     # This is a limited local proxy credential, never the provider key.
     (runtime / "gateway.json").write_text(json.dumps({"pid": __import__("os").getpid(), "port": server.server_port, "token": token,
-        "experiment_data": str(workbench_data.resolve()) if workbench_data is not None else None}), encoding="utf-8")
+        "experiment_data": str(workbench_data.resolve()) if workbench_data is not None else None,
+        "provider": provider}), encoding="utf-8")
     print(json.dumps({"status": "ready", "host": host, "port": server.server_port, "budget_cny": 5}), flush=True)
     try:
         server.serve_forever()
@@ -201,5 +234,7 @@ if __name__ == "__main__":
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=18765)
     parser.add_argument("--workbench-data", type=Path)
+    parser.add_argument("--provider-profile", type=Path)
     args = parser.parse_args()
-    serve(args.key_file, args.runtime, args.host, args.port, args.workbench_data)
+    provider_config = validate_provider(json.loads(args.provider_profile.read_bytes())) if args.provider_profile else None
+    serve(args.key_file, args.runtime, args.host, args.port, args.workbench_data, provider_config)

@@ -9,13 +9,15 @@
 ```powershell
 # 本批已构建前端；以后修改前端时再执行。
 Push-Location -LiteralPath 'projects/project-04-Intelligence Gathering/webui'
-try { & 'E:\nodejs\npm.cmd' run build } finally { Pop-Location }
+try { npm.cmd run build } finally { Pop-Location }
 
 # 启动独立 API 和单 Worker，窗口隐藏；已占用端口时拒绝重复启动。
 .\workbench\start-workbench.ps1
 ```
 
 入口：[研究工作台](http://127.0.0.1:8090/workbench)。04 启动后也可从侧栏或 `/workbench` 跳转。启动脚本默认使用项目 04 的 `.venv/Scripts/python.exe`，没有新增依赖；`-Foreground` 仅前台运行 API，需另开 PowerShell 执行 `python -m workbench.worker`（使用同一虚拟环境）。
+
+工作台与项目03的地址、解释器和端口配置见[协作指引](../CONTRIBUTING.md#本地配置与路径)。
 
 索引和检索还需要 03 本机 API `127.0.0.1:8001` 及其既有本地嵌入服务。支持的 03 原启动脚本为 `projects/project-03-deeptutor/start-local.ps1 -NoBrowser`，它会启动 03 完整界面与 API。本次联调只启动已有本地嵌入脚本和 03 CLI `serve --host 127.0.0.1 --port 8001`；不启动收费模型。
 
@@ -42,11 +44,19 @@ try { & 'E:\nodejs\npm.cmd' run build } finally { Pop-Location }
 
 ## 验收
 
-真实本机链路、用户审核授权、离线故障/并发测试、UI 截图与限制见 [M1 验收记录](../outputs/integration-m1-20261024/README.md)。M0 原始锁清单和验收记录保留不变。
+日常开发可在根目录用项目04的 Python 运行 `python -m workbench.verify_offline outputs/offline-smoke`。输出目录必须是新目录。命令使用仓库自带的合成资料和冻结回答，检查任务恢复、独立重算与报告导出，生成 `report/index.html`。检索和执行服务使用测试替身，无需 Docker、GPU、模型凭据或历史文件。
+
+本机索引、固定评测、报告复核和已知限制见[课程验收摘要](../submissions/26241215467/README.md#2026-11-24-验收摘要)。历史索引和实验结果见[结构化验证记录](../submissions/26241215467/verification.json)。
 
 ## 提示注入专用实验（前四步）
 
-实施、基线归档和离线回归见 [基础验收记录](../outputs/integration-m2-foundation-20261026/README.md)。后续已恢复 Docker，并通过 [真实断网容器交接验收](../outputs/integration-m2-container-20261026/README.md)：API、Worker 重启对账、固定镜像、独立重算和结果台账均使用真实实现；输入为零预算合成冻结回答，不属于第五步真实模型实验。契约说明与请求示例见 [实验契约](experiment-contract.md)。本 profile 是固定方法基准，不进入上游四阶段搜索，不做调参、多 seed 聚合或无效消融；原 synthetic 样例仍有单独兼容路径，不作为通用实验默认值。
+工作台默认使用本机 Docker CLI 执行固定评测，不依赖单独安装 Ubuntu。Docker Desktop 使用 Linux 容器。用 `WORKBENCH_DOCKER_CONTEXT` 指定本机 Docker context，未指定时 Worker 固定启动后首次使用的 context。自备镜像时把 `WORKBENCH_SCIENTIST02_IMAGE` 设为本地镜像 ID 或已安装的 registry digest，并在批准方案里使用同一个值。容器启动时不会自动拉取镜像。固定评测默认用 CPU，可通过 `WORKBENCH_DOCKER_GPUS` 显式选择 GPU。冻结回答复算只需镜像内有 Python 3.11，不执行项目02的原版科研代理。
+
+在 Windows 或 Linux 上准备本地 Python 3.11 镜像，把环境变量 `WORKBENCH_SCIENTIST02_IMAGE` 设置为 `docker image inspect python:3.11-slim --format '{{.Id}}'` 返回的 ID，再从仓库根目录用项目04的解释器运行 `python -m workbench.verify_m2_container outputs/docker-smoke`。此命令使用合成冻结回答，检查实际容器隔离和 Worker 重启对账。旧 WSL 任务按已记录的执行器继续对账，新任务按当前配置选择后端。在线模式仍需原有预算和本地网关。通过 `WORKBENCH_DOCKER_GATEWAY_HOST` 指定容器可达的网关宿主名或 IPv4，默认 `host.docker.internal`。只使用自己控制的网关地址。
+
+项目02的独立 DeepSeek 启动脚本通过 `-Image` 选择本地 Scientist02 镜像，也可读取 `WORKBENCH_SCIENTIST02_IMAGE`。脚本先解析出不可变 ID，准备和运行阶段均使用该 ID。独立入口可以用 `-GatewayHost` 覆盖容器侧网关名称。
+
+11 月 24 日的断网容器验收覆盖本机 API、Worker 重启对账、固定镜像、独立重算和结果台账，使用零预算的合成冻结回答。结果见[课程验收摘要](../submissions/26241215467/README.md#2026-11-24-验收摘要)。契约说明与请求示例见[实验契约](experiment-contract.md)。本 profile 执行固定方法评测。上游四阶段搜索由项目02原版入口运行，旧 synthetic 样例保留独立兼容路径。
 
 - `injection_experiment.py`：批准配置、冻结样本/回答与独立重算；三个指标必须齐全。无效回答保留在分母中；缺失回答直接核验失败。仅支持明确的 exact-answer / marker 判定，不把模型自评当正确标签。
 - `executor02.py` → `worker.py` → 原 WSL 协议 → `container_tasks.py`：多份批准资料、独立 attempt、只读源码副本、确切模型和配置。冻结分析容器断网；重新生成只给受限预算 token，容器没有供应商密钥。旧样例的 `dataset.npz`、64 条预测、seed 42、1800 秒和四阶段次数不会进入新 profile。

@@ -146,21 +146,35 @@ class AgentManager:
             3: "creative_research",
             4: "ablation_studies",
         }
+        fixed_local_data = getattr(getattr(cfg, "experiment", None), "fixed_local_data", False)
+        baseline_data_goal = (
+            "Reuse the fixed local dataset and the comparison controls in the experiment plan."
+            if fixed_local_data
+            else (
+                "Introduce TWO more new datasets from HuggingFace test the model. "
+                "Try very hard to think what Huggingface datasets can be used here for testing."
+            )
+        )
+        research_data_goal = (
+            "Use only the fixed local dataset and preserve the comparison controls."
+            if fixed_local_data
+            else "MAKE SURE you use THREE HuggingFace dataset in total to test your models"
+        )
         self.main_stage_goals: Dict[int, str] = {
             1: """
                 - Focus on getting basic working implementation
                 - Use a simple dataset
                 - Aim for basic functional correctness
                 - If you are given \"Code To Use\", you can directly use it as a starting point.""",
-            2: """
+            2: f"""
                 - Change hyperparameters such as learning rate, number of epochs, batch size, etc. to improve the performance
                 - DO NOT change the model architecture from the previous stage
-                - Introduce TWO more new datasets from HuggingFace test the model. Try very hard to think what Huggingface datasets can be used here for testing.""",
-            3: """
+                - {baseline_data_goal}""",
+            3: f"""
                 - Explore novel improvements
                 - Come up with experiments to reveal new insights
                 - Be creative and think outside the box
-                - MAKE SURE you use THREE HuggingFace dataset in total to test your models""",
+                - {research_data_goal}""",
             4: """
                 - Conduct systematic component analysis that reveals the contribution of each part
                 - Use the same datasets you used from the previous stage""",

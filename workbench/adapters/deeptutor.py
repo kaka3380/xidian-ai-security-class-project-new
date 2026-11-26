@@ -1,5 +1,6 @@
 """Approved snapshot -> existing 03 HTTP APIs. No whole-folder sync or default KB."""
 import json
+import os
 from pathlib import Path
 import subprocess
 from urllib.parse import quote, urlsplit
@@ -31,15 +32,21 @@ def verify_snapshot(snapshot):
 
 
 class DeepTutor:
-    def __init__(self, base_url="http://127.0.0.1:8001", *, transport=None, python=None):
+    def __init__(self, base_url=None, *, transport=None, python=None):
+        if base_url is None:
+            base_url = os.environ.get("DEEPTUTOR_API_URL", "http://127.0.0.1:8001").strip()
         parsed = urlsplit(base_url)
         if parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "localhost", "::1"} or parsed.path not in {"", "/"} or parsed.username or parsed.password or parsed.query or parsed.fragment:
             raise ValueError("03 URL must be a local HTTP origin")
         self.base_url = base_url.rstrip("/")
         self.transport = transport
-        self.python = Path(python) if python else PROJECT03 / ".venv/Scripts/python.exe"
+        configured_python = python or os.environ.get("DEEPTUTOR_PYTHON")
+        relative_default = ".venv/Scripts/python.exe" if os.name == "nt" else ".venv/bin/python"
+        self.python = Path(configured_python).expanduser().resolve() if configured_python else PROJECT03 / relative_default
 
     def _helper(self, payload):
+        if not self.python.is_file():
+            raise UpstreamError("03 interpreter not found; install the 03 environment or set DEEPTUTOR_PYTHON")
         completed = subprocess.run([str(self.python), str(ROOT / "workbench/bridges/deeptutor03/local_rag.py")],
                                    input=canonical(payload), capture_output=True, timeout=90, cwd=PROJECT03)
         if completed.returncode:

@@ -3,6 +3,7 @@ from io import BytesIO
 import json
 from threading import Thread
 import time
+from types import SimpleNamespace
 import urllib.error
 
 import httpx
@@ -15,20 +16,30 @@ from test_injection_experiment import store, snapshot, experiment, regeneration
 
 
 @pytest.mark.parametrize("provider_fails", [False, True])
-def test_scoped_gateway_http_boundary_never_contacts_provider(store, experiment, tmp_path, monkeypatch, provider_fails):
-    package = regeneration(store)
+@pytest.mark.parametrize("configured", [False, True])
+def test_scoped_gateway_http_boundary_never_contacts_provider(store, experiment, tmp_path, monkeypatch, provider_fails, configured):
+    provider = dict(endpoint="https://provider.invalid/v1/chat/completions", model="text-fixture",
+                    input_cny_per_million=3, output_cny_per_million=9) if configured else None
+    package = regeneration(store, provider)
     rows = experiment["experiment_input"]["dataset"]
     budgets = ExperimentBudgets(store.root)
     grant = budgets.approve("p", package["plan_hash"], package["config"], "fixture-explicit-approval")["grant_id"]
     budgets.bind(grant, package, rows)
+    if provider:
+        with pytest.raises(ValueError, match="provider or rates"):
+            budgets.reserve(grant, package["task_id"], rows[0]["sample_id"], request_for(package, rows[0]),
+                            budgets.credential(grant), provider=dict(provider, output_cny_per_million=1))
+        assert budgets.summary(grant)["model_requests"] == 0
     calls = []
     def fake_provider(request, timeout):
         calls.append(json.loads(request.data))
-        assert request.full_url == "https://api.deepseek.com/chat/completions"
+        assert request.full_url == (provider["endpoint"] if provider else "https://api.deepseek.com/chat/completions")
+        assert ("thinking" in calls[-1]) == (provider is None)
         if provider_fails:
             raise urllib.error.URLError("fixture transport failure")
-        return BytesIO(json.dumps(dict(model="deepseek-flash", choices=[dict(message=dict(content="OK"))])).encode())
-    monkeypatch.setattr(gateway.urllib.request, "urlopen", fake_provider)
+        model = provider["model"] if provider else "deepseek-flash"
+        return BytesIO(json.dumps(dict(model=model, choices=[dict(message=dict(content="OK"))])).encode())
+    monkeypatch.setattr(gateway.urllib.request, "build_opener", lambda *handlers: SimpleNamespace(open=fake_provider))
     servers = []
     original_server = gateway.ThreadingHTTPServer
     def server_factory(*args, **kwargs):
@@ -39,7 +50,7 @@ def test_scoped_gateway_http_boundary_never_contacts_provider(store, experiment,
     key = tmp_path / "fixture-key.txt"
     key.write_text("sk-synthetic000000000000000000000000", encoding="utf-8")
     runtime = tmp_path / "isolated-gateway"
-    thread = Thread(target=gateway.serve, args=(key, runtime), kwargs=dict(port=0, workbench_data=store.root), daemon=True)
+    thread = Thread(target=gateway.serve, args=(key, runtime), kwargs=dict(port=0, workbench_data=store.root, provider=provider), daemon=True)
     thread.start()
     try:
         deadline = time.monotonic() + 5
@@ -50,6 +61,10 @@ def test_scoped_gateway_http_boundary_never_contacts_provider(store, experiment,
                    "X-Experiment-Task": package["task_id"], "X-Experiment-Sample": rows[0]["sample_id"]}
         endpoint = f"http://127.0.0.1:{settings['port']}/v1/experiment/chat/completions"
         with httpx.Client(trust_env=False, timeout=3) as client:
+            if provider:
+                general = f"http://127.0.0.1:{settings['port']}/v1/chat/completions"
+                assert client.post(general, headers={"Authorization": "Bearer " + settings["token"]},
+                                   json=request_for(package, rows[0])).status_code == 404
             forged = request_for(package, rows[0])
             forged["messages"][1]["content"] = "unapproved payload"
             assert client.post(endpoint, headers=headers, json=forged).status_code == 402

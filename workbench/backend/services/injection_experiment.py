@@ -5,6 +5,7 @@ is an exact-answer/marker benchmark; passing is not a semantic or research revie
 """
 import math
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from executor.protocol import canonical, confined, digest, file_hash, identifier
 
@@ -12,9 +13,29 @@ METRICS = ["attack_success_rate", "clean_task_accuracy", "valid_response_rate"]
 MODES = {"frozen_analysis", "regenerate"}
 
 
+def validate_provider(value):
+    if not isinstance(value, dict) or set(value) != {"endpoint", "model", "input_cny_per_million", "output_cny_per_million"}:
+        raise ValueError("provider profile requires endpoint, model and two CNY rates")
+    if any(not isinstance(value[key], str) or not value[key] or len(value[key]) > 2048 or
+           any(ord(character) < 33 or ord(character) > 126 for character in value[key]) for key in ("endpoint", "model")):
+        raise ValueError("provider endpoint and model must be explicit printable identifiers")
+    endpoint = urlsplit(value["endpoint"])
+    if (not endpoint.hostname or endpoint.username is not None or endpoint.password is not None or
+            endpoint.query or endpoint.fragment or not endpoint.path.endswith("/chat/completions") or
+            not (endpoint.scheme == "https" or
+                 (endpoint.scheme == "http" and endpoint.hostname in {"localhost", "127.0.0.1", "::1"}))):
+        raise ValueError("provider needs an HTTPS chat completions endpoint, or a local HTTP endpoint, without credentials")
+    if endpoint.port is not None and not 1 <= endpoint.port <= 65535:
+        raise ValueError("invalid provider port")
+    if any(type(value[key]) is not int or not 1 <= value[key] <= 1_000_000
+           for key in ("input_cny_per_million", "output_cny_per_million")):
+        raise ValueError("provider rates must be conservative positive whole CNY per million tokens")
+    return value
+
+
 def source_inventory():
     root = Path(__file__).resolve().parents[3]
-    names = ["executor/main.py", "executor/protocol.py", "executor/container_tasks.py",
+    names = ["executor/main.py", "executor/protocol.py", "executor/container_tasks.py", "executor/host.py",
              "workbench/adapters/scientist02.py", "workbench/bridges/scientist02/injection_runner.py",
              "workbench/backend/services/research_package.py", "workbench/backend/services/review_workflow.py",
              "workbench/backend/services/model_gateway.py", "workbench/backend/services/experiment_budget.py",
@@ -30,7 +51,7 @@ def contract(plan):
     config = plan["config"]
     value = config["experiment"]
     required = {"profile", "mode", "judge", "target_model", "provider_model", "system_prompt", "temperature", "max_tokens", "timeout_seconds", "response_sha256"}
-    if set(value) != required or value["profile"] != "prompt_injection_v1":
+    if set(value) - {"provider"} != required or value["profile"] != "prompt_injection_v1":
         raise ValueError("unsupported experiment contract fields/profile")
     if value["mode"] not in MODES or value["judge"] != "exact_trimmed_marker_v1":
         raise ValueError("unsupported experiment mode/judge")
@@ -41,8 +62,10 @@ def contract(plan):
     for key in ("target_model", "provider_model", "system_prompt"):
         if not isinstance(value[key], str) or not value[key].strip():
             raise ValueError("explicit model and system prompt required")
-    # Matches the existing gateway's verified provider mapping. No implicit alias.
-    if value["provider_model"] != "deepseek-flash" or value["target_model"] != value["provider_model"]:
+    provider = validate_provider(value["provider"]) if "provider" in value else None
+    if (value["target_model"] != value["provider_model"] or
+            (provider is not None and provider["model"] != value["provider_model"]) or
+            (value["mode"] == "regenerate" and provider is None and value["provider_model"] != "deepseek-flash")):
         raise ValueError("unsupported or implicit target/provider model mapping")
     if type(value["temperature"]) not in (int, float) or value["temperature"] != 0:
         raise ValueError("profile supports temperature 0 only")

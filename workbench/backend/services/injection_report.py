@@ -13,6 +13,7 @@ from workbench.verify_experiment import verify
 from workbench.offline_client import publish_directory
 
 NAMES = dict(attack_success_rate="攻击成功率", clean_task_accuracy="干净任务正确率", valid_response_rate="有效响应率")
+LEGACY_GENERATOR_HASHES = frozenset({"a41dd5e5cd1560ae5d9313a3b47815443a495d9e25b8f77c95b11706494a231a"})
 
 
 def _text(value):
@@ -26,13 +27,17 @@ def _markdown(value):
     return text.replace("\n", "<br>")
 
 
-def _usage(raw, source):
-    rates = {}
-    for node in ast.parse(source.decode("utf-8-sig")).body:
-        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant):
-            for target in node.targets:
-                if isinstance(target, ast.Name) and target.id in {"INPUT_CNY_PER_MILLION", "OUTPUT_CNY_PER_MILLION"}:
-                    rates[target.id] = node.value.value
+def _usage(raw, source, provider=None):
+    if provider:
+        rates = {"INPUT_CNY_PER_MILLION": provider["input_cny_per_million"],
+                 "OUTPUT_CNY_PER_MILLION": provider["output_cny_per_million"]}
+    else:
+        rates = {}
+        for node in ast.parse(source.decode("utf-8-sig")).body:
+            if isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant):
+                for target in node.targets:
+                    if isinstance(target, ast.Name) and target.id in {"INPUT_CNY_PER_MILLION", "OUTPUT_CNY_PER_MILLION"}:
+                        rates[target.id] = node.value.value
     if len(rates) != 2 or any(type(value) not in (int, float) or value <= 0 for value in rates.values()):
         raise ValueError("frozen gateway pricing constants missing")
     prompt, completion, known = 0, 0, 0
@@ -48,7 +53,7 @@ def _usage(raw, source):
                 actual_provider_charge="not independently available; this is a usage-based upper bound, not a receipt")
 
 
-def build_report(folder, data=None):
+def build_report(folder, data=None, *, generator_source=None):
     folder = local_path(folder)
     independent = verify(folder, data)
     package = json.loads((folder / "research_package.json").read_bytes())
@@ -64,7 +69,8 @@ def build_report(folder, data=None):
         calls = [row for row in budget["requests"] if row["task_id"] == package["task_id"]]
         snapshot = dict(grant_summary=budget, task_requests=calls, task_reserved_upper_bound_cny=sum(row["reserved_micro"] for row in calls) / 1e6)
         raw = [json.loads(line) for line in (folder / "experiments/raw-responses.jsonl").read_bytes().splitlines()]
-        usage = _usage(raw, (folder / "runtime/workbench/backend/services/model_gateway.py").read_bytes())
+        usage = _usage(raw, (folder / "runtime/workbench/backend/services/model_gateway.py").read_bytes(),
+                       package["config"]["experiment"].get("provider"))
     evidence_names = {"research_package.json", "approved-plan.json", "approved-documents.json", "experiment-input.json", "result.json"}
     evidence_names.update(document["path"] for document in package["documents"])
     evidence_names.update(artifact["path"] for artifact in result["artifacts"])
@@ -74,7 +80,7 @@ def build_report(folder, data=None):
     files["independent-recalculation.json"] = canonical(independent)
     files["review-status.json"] = canonical(dict(status="pending_human_review", task_id=package["task_id"], package_hash=package["package_hash"], scientific_review="independent; not performed by this exporter"))
     files["metrics.svg"] = metric_svg(computed)
-    files["report-generator.py"] = Path(__file__).read_bytes()
+    files["report-generator.py"] = Path(__file__).read_bytes() if generator_source is None else generator_source
     if snapshot is not None:
         files["budget-snapshot.json"] = canonical(snapshot)
         files["usage-summary.json"] = canonical(usage)
@@ -156,7 +162,12 @@ def render_report(folder, output, *, data=None):
 
 def verify_report(folder, *, data=None):
     folder = local_path(folder)
-    _, files = build_report(folder / "evidence", data)
+    source = confined(folder, "report-generator.py").read_bytes()
+    source_hash = digest(source.replace(b"\r\n", b"\n"))
+    current_hash = digest(Path(__file__).read_bytes().replace(b"\r\n", b"\n"))
+    if source_hash != current_hash and source_hash not in LEGACY_GENERATOR_HASHES:
+        raise ValueError("unrecognized archived report generator")
+    _, files = build_report(folder / "evidence", data, generator_source=source)
     actual = {path.relative_to(folder).as_posix() for path in folder.rglob("*") if path.is_file()}
     if actual != set(files):
         raise ValueError("report file inventory differs")

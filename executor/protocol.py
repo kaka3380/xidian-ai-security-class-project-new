@@ -54,7 +54,7 @@ def confined(root, relative):
 
 
 def snapshot_hash():
-    return digest(canonical({name: file_hash(Path(__file__).parent / name) for name in ("main.py", "protocol.py", "container_tasks.py")}))
+    return digest(canonical({name: file_hash(Path(__file__).parent / name) for name in ("main.py", "protocol.py", "container_tasks.py", "host.py")}))
 
 
 def validate_package(package, folder, *, require_current_source=True):

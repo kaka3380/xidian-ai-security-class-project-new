@@ -58,11 +58,12 @@ class ExperimentBudgets:
 
     def bind(self, grant, package, dataset):
         self.validate(grant, package)
-        contract(package)
+        provider = contract(package).get("provider")
         requests = {row["sample_id"]: digest(canonical(request_for(package, row))) for row in dataset}
+        binding = dict(provider=provider, samples=requests) if provider is not None else requests
         with self.connect() as db:
             old = db.execute("SELECT grant_id,package_hash,requests FROM bindings WHERE task=?", (package["task_id"],)).fetchone()
-            expected = (grant, package["package_hash"], canonical(requests).decode())
+            expected = (grant, package["package_hash"], canonical(binding).decode())
             if old and old != expected:
                 raise ValueError("task budget binding changed")
             db.execute("INSERT OR IGNORE INTO bindings VALUES(?,?,?,?)", (package["task_id"], *expected))
@@ -74,17 +75,24 @@ class ExperimentBudgets:
             raise ValueError("unknown budget grant")
         return row[0]
 
-    def reserve(self, grant, task, sample, body, token):
-        request, amount = prepare_request(body)
+    def reserve(self, grant, task, sample, body, token, *, provider=None):
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             account = db.execute("SELECT limit_micro,max_requests,token FROM grants WHERE id=?", (grant,)).fetchone()
             binding = db.execute("SELECT requests FROM bindings WHERE task=? AND grant_id=?", (task, grant)).fetchone()
             if account is None or not secrets.compare_digest(account[2], token) or binding is None:
                 raise ValueError("unauthorized task budget")
+            bound = json.loads(binding[0])
+            if isinstance(bound.get("samples"), dict):
+                expected_provider, requests = bound["provider"], bound["samples"]
+            else:
+                expected_provider, requests = None, bound
+            if provider != expected_provider:
+                raise ValueError("gateway provider or rates differ from the approved plan")
             checksum = digest(canonical(body))
-            if json.loads(binding[0]).get(sample) != checksum:
+            if requests.get(sample) != checksum:
                 raise ValueError("request differs from approved sample/method/model")
+            request, amount = prepare_request(body, provider=provider)
             used, count = db.execute("SELECT COALESCE(SUM(reserved),0),COUNT(*) FROM calls WHERE grant_id=?", (grant,)).fetchone()
             if used + amount > account[0] or count >= account[1]:
                 raise ValueError("approved experiment budget/request limit reached")
@@ -101,18 +109,30 @@ class ExperimentBudgets:
             db.execute("UPDATE calls SET status=?,response=? WHERE id=? AND status='reserved'",
                        ("completed" if response is not None else "unknown_cost", json.dumps(response) if response is not None else None, call_id))
 
-    def verify_responses(self, grant, package, responses):
+    def verify_responses(self, grant, package, responses, *, raw_responses=None):
         self.validate(grant, package)
+        archived = {}
+        if raw_responses is not None:
+            archived = {row["sample_id"]: row["response"] for row in raw_responses}
+            if len(archived) != len(raw_responses) or set(archived) != {row["sample_id"] for row in responses}:
+                raise ValueError("archived response inventory differs from gateway evidence")
         with self.connect() as db:
             for row in responses:
                 found = db.execute("SELECT id,status,response FROM calls WHERE grant_id=? AND task=? AND sample=?", (grant, package["task_id"], row["sample_id"])).fetchone()
                 if found is None or found[0] != row["request_id"]:
                     raise ValueError("response lacks gateway evidence")
+                raw = archived.get(row["sample_id"])
+                if raw_responses is not None and (not isinstance(raw, dict) or raw.get("workbench_request_id") != found[0]):
+                    raise ValueError("archived response lacks gateway identity")
                 if found[1] == "unknown_cost" and row["status"] == "error" and row["answer"] == "":
+                    if raw is not None and raw.get("usage") is not None:
+                        raise ValueError("failed call claims usage absent from the gateway ledger")
                     continue
                 if found[1] != "completed":
                     raise ValueError("response lacks completed gateway evidence")
                 data = json.loads(found[2])
                 if data.get("model") != row["model"] or data["choices"][0]["message"].get("content") != row["answer"] or row["status"] != "ok":
                     raise ValueError("response differs from raw gateway record")
+                if raw is not None and canonical(raw) != canonical(dict(data, workbench_request_id=found[0])):
+                    raise ValueError("archived response differs from gateway ledger")
         return self.summary(grant)

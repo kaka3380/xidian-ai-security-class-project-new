@@ -1,5 +1,6 @@
 """Prepare a reviewable runtime repair without authorizing a new experiment."""
 import json
+import os
 from pathlib import Path
 import shutil
 import tarfile
@@ -29,7 +30,8 @@ with tarfile.open(root / '.cache/linux-stage-a/source-02.tar') as original, tarf
             archive.addfile(member, io.BytesIO(data))
         else:
             archive.addfile(member)
-image = subprocess.check_output(['E:/Docker/DockerDesktop/resources/bin/docker.exe', 'image', 'inspect', 'research/scientist02:stage-d-repair-20261022', '--format', '{{.Id}}']).decode().strip()
+image = subprocess.check_output([os.environ.get('DOCKER_BIN') or 'docker', 'image', 'inspect',
+                                 'research/scientist02:stage-d-repair-20261022', '--format', '{{.Id}}'], text=True).strip()
 plan = json.loads((root / 'workbench/exchange/scientist02-synthetic-20261022-01/approved-plan.json').read_text())
 plan.pop('approval', None)
 plan['version'] = 2
